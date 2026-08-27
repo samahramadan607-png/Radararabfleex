@@ -7,8 +7,14 @@ from datetime import datetime, timezone
 
 import requests
 import telebot
+
 BOT_TOKEN = "7808630939:AAEY0_q6vnkKlMRjvXNmEXwK1G80hv0vghY" # تأكد من وضع التوكن الخاص بك
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "1013251619")
+
+# --- الإضافات الجديدة الخاصة بالربط مع الموقع ---
+SITE_API_URL = "http://arabfleex.live/add_episode.php" # الدومين الخاص بك
+SITE_API_KEY = "MY_SUPER_SECRET_KEY_123" # نفس الكلمة اللي في ملف الـ PHP
+# -----------------------------------------------
 
 # مسار الحفظ (جاهز للعمل على سيرفرات Railway أو محلياً)
 DATA_FILE = os.environ.get("DATA_FILE", "series.json")
@@ -36,7 +42,6 @@ def load_series_data():
     except (OSError, ValueError) as error:
         print(f"Error loading series data: {error}", flush=True)
         return {}
-
 
 def save_series_data(data):
     """حفظ بيانات المسلسلات في ملف البوت المحلي"""
@@ -99,7 +104,7 @@ def check_link(url):
         return False
 
 def scan_series(slug, info):
-    """فحص الحلقة القادمة للمسلسل وإرسال رسالة تليجرام فور إيجادها"""
+    """فحص الحلقة القادمة للمسلسل وإرسال رسالة تليجرام وإرسال البيانات للموقع"""
     global last_scan_result
     episode = int(info.get("last_ep", 0)) + 1
     season = int(info.get("season", 1))
@@ -122,7 +127,7 @@ def scan_series(slug, info):
         )
         return None
 
-    # تم العثور على روابط! إرسال رسالة تليجرام فقط.
+    # تم العثور على روابط! إرسال رسالة تليجرام
     title = html.escape(str(info.get("title", slug)))
     quality_lines = [
         f"✅ <b>{quality}</b>\n<code>{html.escape(links[quality])}</code>"
@@ -136,10 +141,36 @@ def scan_series(slug, info):
         f"📺 <b>الحلقة:</b> {episode}\n\n"
         "🔗 <b>الروابط المتاحة:</b>\n\n"
         + "\n\n".join(quality_lines)
-        + "\n\n📌 <i>هذا مجرد تنبيه، لم يتم إضافة أي شيء للموقع الخاص بك.</i>",
+        + "\n\n📌 <i>وجاري محاولة إرسال البيانات للموقع الخاص بك...</i>",
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
+
+    # --- بداية كود الإرسال للموقع ---
+    print(f"Sending episode {episode} to website...", flush=True)
+    payload = {
+        "key": SITE_API_KEY,
+        "slug": slug,
+        "season": season,
+        "episode": episode,
+        "links": json.dumps(links) # تحويل الروابط لنص
+    }
+    
+    try:
+        # وضعنا User-Agent لتقليل احتمالية حظر InfinityFree للطلب
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        site_response = requests.post(SITE_API_URL, data=payload, headers=headers, timeout=15)
+        
+        if site_response.status_code == 200:
+            print(f"[SITE] Response: {site_response.text}", flush=True)
+        else:
+            print(f"[SITE ERROR] HTTP {site_response.status_code}", flush=True)
+    except Exception as e:
+        print(f"[SITE FAILED] {e}", flush=True)
+    # --- نهاية كود الإرسال للموقع ---
+
     last_scan_result = f"{info.get('title', slug)}: تم إيجاد الحلقة {episode} وإرسال التنبيه ✅"
     return episode
 
@@ -183,7 +214,6 @@ def format_duration(total_seconds):
     minutes, seconds = divmod(seconds, 60)
     return f"{hours}س {minutes}د {seconds}ث"
 
-
 def status_message():
     uptime = (datetime.now(timezone.utc) - started_at).total_seconds()
     data = load_series_data()
@@ -221,8 +251,7 @@ def welcome(message):
         bot.reply_to(
             message,
             "🤖 <b>أهلاً بك في نظام المراقبة التلقائي</b> 🎬\n\n"
-            "يقوم هذا البوت بفحص سيرفرات المشاهدة كل 3 دقائق للبحث عن الحلقات الجديدة، وإرسال الروابط المباشرة لك فور توفرها.\n"
-            "<i>(لا يتم نشر أي شيء في موقعك، هذا للإشعار فقط)</i>\n\n"
+            "يقوم هذا البوت بفحص سيرفرات المشاهدة كل 3 دقائق للبحث عن الحلقات الجديدة، وإرسال الروابط المباشرة لك فور توفرها ورفعها لموقعك.\n"
             "📌 <b>قائمة الأوامر المتاحة:</b>\n"
             "🔹 <code>/add</code> — إضافة مسلسل جديد للمراقبة\n"
             "🔹 <code>/del</code> — حذف مسلسل من المراقبة\n"
@@ -232,7 +261,6 @@ def welcome(message):
             "🔹 <code>/scan</code> — إجبار البوت على الفحص فوراً",
             parse_mode="HTML",
         )
-
 
 @bot.message_handler(commands=["add"])
 def add_series(message):
@@ -275,7 +303,6 @@ def add_series(message):
             parse_mode="HTML",
         )
 
-
 @bot.message_handler(commands=["setep"])
 def set_episode(message):
     if not admin_only(message):
@@ -304,7 +331,6 @@ def set_episode(message):
             "❌ <b>خطأ! الصيغة الصحيحة هي:</b>\n<code>/setep slug رقم_الحلقة</code>\n\n💡 مثال: <code>/setep al-thaman 20</code>", 
             parse_mode="HTML"
         )
-
 
 @bot.message_handler(commands=["list"])
 def list_series(message):
@@ -368,6 +394,6 @@ def force_check(message):
 if __name__ == "__main__":
     # تشغيل لوب الفحص المستمر كل 3 دقائق في الخلفية
     threading.Thread(target=auto_checker_loop, daemon=True).start()
-    print("Bot is running with JSON internal storage and 3-min loop...", flush=True)
+    print("Bot is running with JSON internal storage, 3-min loop, and website integration...", flush=True)
     # تشغيل التليجرام
     bot.infinity_polling()
