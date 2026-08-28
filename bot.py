@@ -1,13 +1,16 @@
 import html
 import json
 import os
+import re
 import threading
 import time
 from datetime import datetime, timezone
 
 import requests
 import telebot
-BOT_TOKEN = "7808630939:AAEY0_q6vnkKlMRjvXNmEXwK1G80hv0vghY" # تأكد من وضع التوكن الخاص بك
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+BOT_TOKEN = "7808630939:AAEY0_q6vnkKlMRjvXNmEXwK1G80hv0vghY"  # تأكد من وضع التوكن الخاص بك
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "1013251619")
 
 # مسار الحفظ (جاهز للعمل على سيرفرات Railway أو محلياً)
@@ -36,7 +39,6 @@ def load_series_data():
     except (OSError, ValueError) as error:
         print(f"Error loading series data: {error}", flush=True)
         return {}
-
 
 def save_series_data(data):
     """حفظ بيانات المسلسلات في ملف البوت المحلي"""
@@ -99,7 +101,7 @@ def check_link(url):
         return False
 
 def scan_series(slug, info):
-    """فحص الحلقة القادمة للمسلسل وإرسال رسالة تليجرام فور إيجادها"""
+    """فحص الحلقة القادمة للمسلسل وإرسال رسالة تليجرام بالشكل المطلوب"""
     global last_scan_result
     episode = int(info.get("last_ep", 0)) + 1
     season = int(info.get("season", 1))
@@ -122,29 +124,27 @@ def scan_series(slug, info):
         )
         return None
 
-    # تم العثور على روابط! إرسال رسالة تليجرام فقط.
-    title = html.escape(str(info.get("title", slug)))
-    quality_lines = [
-        f"✅ <b>{quality}</b>\n<code>{html.escape(links[quality])}</code>"
-        for quality in ("360p", "480p", "720p", "1080p")
-        if quality in links
-    ]
+    # بناء الرسالة بالشكل الجديد: 360|url,480|url,720|url,1080|url
+    formatted_links = []
+    for q in ["360p", "480p", "720p", "1080p"]:
+        if q in links:
+            q_number = q.replace("p", "")  # إزالة حرف p من الجودة
+            formatted_links.append(f"{q_number}|{links[q]}")
+    
+    final_message = ",".join(formatted_links)
+
+    # إرسال الرسالة إلى الآدمن
     bot.send_message(
         ADMIN_CHAT_ID,
-        "🚀 <b>حلقة جديدة متاحة!</b>\n\n"
-        f"🎬 <b>المسلسل:</b> {title}\n"
-        f"📺 <b>الحلقة:</b> {episode}\n\n"
-        "🔗 <b>الروابط المتاحة:</b>\n\n"
-        + "\n\n".join(quality_lines)
-        + "\n\n📌 <i>هذا مجرد تنبيه، لم يتم إضافة أي شيء للموقع الخاص بك.</i>",
-        parse_mode="HTML",
+        final_message,
         disable_web_page_preview=True,
     )
+
     last_scan_result = f"{info.get('title', slug)}: تم إيجاد الحلقة {episode} وإرسال التنبيه ✅"
     return episode
 
 def scan_all_series_once():
-    """الدوران على كل المسلسلات الموجودة في النوتة (JSON) لفحصها"""
+    """الدوران على كل المسلسلات الموجودة لفحصها"""
     global last_scan_at, scan_cycles, total_added
     if not scan_lock.acquire(blocking=False):
         return []
@@ -157,7 +157,7 @@ def scan_all_series_once():
             new_episode = scan_series(slug, info)
             if new_episode:
                 total_added += 1
-                # تحديث النوتة الخاصة بالبوت عشان يطلب الحلقة اللي بعدها المرة الجاية
+                # تحديث رقم الحلقة عشان يطلب الحلقة اللي بعدها المرة الجاية
                 data[slug]["last_ep"] = new_episode
                 save_series_data(data)
                 results.append(f"{info.get('title', slug)}: تم إرسال الحلقة {new_episode} ✅")
@@ -169,7 +169,7 @@ def scan_all_series_once():
         scan_lock.release()
 
 def auto_checker_loop():
-    """هذه الدالة تعمل في الخلفية وتفحص كل 3 دقائق"""
+    """تعمل في الخلفية وتفحص كل 3 دقائق"""
     while True:
         try:
             scan_all_series_once()
@@ -182,7 +182,6 @@ def format_duration(total_seconds):
     hours, seconds = divmod(seconds, 3600)
     minutes, seconds = divmod(seconds, 60)
     return f"{hours}س {minutes}د {seconds}ث"
-
 
 def status_message():
     uptime = (datetime.now(timezone.utc) - started_at).total_seconds()
@@ -210,10 +209,8 @@ def status_message():
             )
     return "\n".join(lines)
 
-
 def admin_only(message):
     return str(message.chat.id) == str(ADMIN_CHAT_ID)
-
 
 @bot.message_handler(commands=["start", "help"])
 def welcome(message):
@@ -221,11 +218,9 @@ def welcome(message):
         bot.reply_to(
             message,
             "🤖 <b>أهلاً بك في نظام المراقبة التلقائي</b> 🎬\n\n"
-            "يقوم هذا البوت بفحص سيرفرات المشاهدة كل 3 دقائق للبحث عن الحلقات الجديدة، وإرسال الروابط المباشرة لك فور توفرها.\n"
-            "<i>(لا يتم نشر أي شيء في موقعك، هذا للإشعار فقط)</i>\n\n"
             "📌 <b>قائمة الأوامر المتاحة:</b>\n"
-            "🔹 <code>/add</code> — إضافة مسلسل جديد للمراقبة\n"
-            "🔹 <code>/del</code> — حذف مسلسل من المراقبة\n"
+            "🔹 <code>/add</code> — إضافة مسلسل جديد للمراقبة (بالرابط)\n"
+            "🔹 <code>/del</code> — حذف مسلسل من المراقبة (بالأزرار)\n"
             "🔹 <code>/list</code> — عرض قائمة المسلسلات الحالية\n"
             "🔹 <code>/setep</code> — تعديل رقم آخر حلقة لمسلسل\n"
             "🔹 <code>/check</code> — عرض حالة البوت والإحصائيات\n"
@@ -233,48 +228,56 @@ def welcome(message):
             parse_mode="HTML",
         )
 
-
 @bot.message_handler(commands=["add"])
-def add_series(message):
+def add_series_start(message):
     if not admin_only(message):
         return
-    try:
-        parts = message.text.split()
-        slug, title, series_id, last_ep = parts[1:5]
-        region = parts[5].upper() if len(parts) > 5 else "EG"
-        data = load_series_data()
-        
-        # استبدال الشرطة السفلية بمسافة لاسم المسلسل
-        clean_title = title.replace("_", " ")
-        
-        data[slug] = {
-            "series_id": int(series_id),
-            "title": clean_title,
-            "season": 1,
-            "last_ep": int(last_ep),
-            "region": region,
-        }
-        save_series_data(data)
-        bot.reply_to(
-            message, 
-            f"✅ <b>تمت الإضافة بنجاح!</b>\n"
-            f"📺 المسلسل: <b>{html.escape(clean_title)}</b>\n"
-            f"⏳ ننتظر الآن توفر الحلقة: <b>{int(last_ep) + 1}</b>\n"
-            f"🌍 المنطقة: <b>{region}</b>", 
-            parse_mode="HTML"
-        )
-    except (IndexError, ValueError):
-        bot.reply_to(
-            message,
-            "❌ <b>خطأ في كتابة الأمر!</b>\n\n"
-            "📌 <b>الصيغة الصحيحة:</b>\n"
-            "<code>/add slug Name ID Last_EP Region</code>\n\n"
-            "💡 <b>مثال:</b>\n"
-            "<code>/add al-thaman الثمن 123 15 EG</code>\n\n"
-            "<i>⚠️ ملاحظة: إذا كان اسم المسلسل يتكون من كلمتين، استخدم شرطة سفلية ( _ ) بدلاً من المسافة، مثال: <code>مسار_إجباري</code></i>",
-            parse_mode="HTML",
-        )
+    msg = bot.reply_to(message, "🔗 <b>إضافة مسلسل جديد:</b>\nأرسل لي <b>رابط آخر حلقة</b> نزلت للمسلسل لاستخراج البيانات منه تلقائياً.\n💡 مثال:\n<code>https://b2.shahidtv.net/files/EG/bnj-kuly/bnj-kuly-S01-EP011-360p.mp4</code>", parse_mode="HTML")
+    bot.register_next_step_handler(msg, process_link_step)
 
+def process_link_step(message):
+    if message.text.startswith('/'): return
+    link = message.text.strip()
+    
+    try:
+        parts = link.split('/')
+        region = parts[4]  # EG, LB, etc...
+        slug = parts[5]    # bnj-kuly
+        filename = parts[-1]
+        
+        # البحث عن الموسم والحلقة
+        match = re.search(r'-S(\d+)-EP(\d+)', filename, re.IGNORECASE)
+        if match:
+            season = int(match.group(1))
+            episode = int(match.group(2))
+        else:
+            bot.reply_to(message, "❌ لم أتمكن من العثور على رقم الموسم والحلقة في الرابط (تأكد أن الرابط يحتوي على S01-EP01). حاول مجدداً.")
+            return
+
+        msg = bot.reply_to(message, f"✅ تم استخراج البيانات:\nالمعرف: <code>{slug}</code>\nالموسم: <code>{season}</code>\nآخر حلقة: <code>{episode}</code>\n\n📝 أرسل الآن <b>اسم المسلسل</b> لحفظه (عربي أو إنجليزي):", parse_mode="HTML")
+        bot.register_next_step_handler(msg, save_extracted_series, slug, region, season, episode)
+    
+    except Exception as e:
+        bot.reply_to(message, f"❌ حدث خطأ في قراءة الرابط. تأكد أنه رابط صحيح.\nالخطأ: {e}")
+
+def save_extracted_series(message, slug, region, season, episode):
+    if message.text.startswith('/'): return
+    title = message.text.strip()
+    
+    data = load_series_data()
+    data[slug] = {
+        "title": title,
+        "season": season,
+        "last_ep": episode,
+        "region": region,
+    }
+    save_series_data(data)
+    
+    bot.reply_to(
+        message, 
+        f"✅ <b>تمت الإضافة بنجاح!</b>\n📺 المسلسل: <b>{title}</b>\n⏳ البوت سيبحث الآن عن الحلقة القادمة: <b>{episode + 1}</b>", 
+        parse_mode="HTML"
+    )
 
 @bot.message_handler(commands=["setep"])
 def set_episode(message):
@@ -305,7 +308,6 @@ def set_episode(message):
             parse_mode="HTML"
         )
 
-
 @bot.message_handler(commands=["list"])
 def list_series(message):
     if not admin_only(message):
@@ -318,30 +320,40 @@ def list_series(message):
     ) or "📭 لا توجد مسلسلات مضافة حالياً في القائمة."
     bot.reply_to(message, "📋 <b>قائمة المسلسلات تحت المراقبة:</b>\n\n" + text, parse_mode="HTML")
 
-
 @bot.message_handler(commands=["del"])
-def delete_series(message):
+def delete_series_start(message):
     if not admin_only(message):
         return
-    try:
-        slug = message.text.split()[1]
-        data = load_series_data()
-        if slug in data:
-            deleted_title = html.escape(data[slug].get("title", slug))
-            del data[slug]
-            save_series_data(data)
-            bot.reply_to(message, f"✅ <b>تم الحذف بنجاح!</b>\nتمت إزالة <b>{deleted_title}</b> من قائمة المراقبة.", parse_mode="HTML")
-        else:
-            bot.reply_to(message, "⚠️ <b>المسلسل غير موجود في قائمة المتابعة.</b>", parse_mode="HTML")
-    except IndexError:
-        bot.reply_to(message, "❌ <b>خطأ! الصيغة الصحيحة هي:</b>\n<code>/del slug</code>\n\n💡 مثال: <code>/del al-thaman</code>", parse_mode="HTML")
+    data = load_series_data()
+    if not data:
+        bot.reply_to(message, "📭 لا توجد مسلسلات مضافة حالياً للحذف.")
+        return
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    for slug, info in data.items():
+        title = info.get("title", slug)
+        markup.add(InlineKeyboardButton(text=f"❌ حذف: {title}", callback_data=f"del_{slug}"))
+    
+    bot.reply_to(message, "🗑 <b>اختر المسلسل الذي تريد حذفه:</b>", reply_markup=markup, parse_mode="HTML")
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith('del_'))
+def process_delete_callback(call):
+    slug = call.data.split('del_')[1]
+    data = load_series_data()
+    
+    if slug in data:
+        deleted_title = html.escape(data[slug].get("title", slug))
+        del data[slug]
+        save_series_data(data)
+        bot.answer_callback_query(call.id, "تم الحذف بنجاح! ✅")
+        bot.edit_message_text(f"✅ تم حذف مسلسل <b>{deleted_title}</b> من قائمة المراقبة.", call.message.chat.id, call.message.message_id, parse_mode="HTML")
+    else:
+        bot.answer_callback_query(call.id, "⚠️ المسلسل غير موجود أو تم حذفه مسبقاً!", show_alert=True)
 
 @bot.message_handler(commands=["check", "status"])
 def status(message):
     if admin_only(message):
         bot.reply_to(message, status_message(), parse_mode="HTML")
-
 
 @bot.message_handler(commands=["scan"])
 def force_check(message):
@@ -368,6 +380,6 @@ def force_check(message):
 if __name__ == "__main__":
     # تشغيل لوب الفحص المستمر كل 3 دقائق في الخلفية
     threading.Thread(target=auto_checker_loop, daemon=True).start()
-    print("Bot is running with JSON internal storage and 3-min loop...", flush=True)
+    print("Bot is running with link extraction, interactive delete, and pure raw message format...", flush=True)
     # تشغيل التليجرام
     bot.infinity_polling()
