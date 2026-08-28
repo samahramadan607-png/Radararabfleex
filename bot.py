@@ -131,13 +131,18 @@ def scan_series(slug, info):
             q_number = q.replace("p", "")  # إزالة حرف p من الجودة
             formatted_links.append(f"{q_number}|{links[q]}")
     
-    final_message = ",".join(formatted_links)
+    links_string = ",".join(formatted_links)
+    title = info.get("title", slug)
+    
+    # إضافة اسم المسلسل ورقم الحلقة قبل الروابط
+    final_message = f"📺 <b>المسلسل:</b> {title}\n🎬 <b>الحلقة:</b> {episode}\n\n<code>{links_string}</code>"
 
     # إرسال الرسالة إلى الآدمن
     bot.send_message(
         ADMIN_CHAT_ID,
         final_message,
         disable_web_page_preview=True,
+        parse_mode="HTML"
     )
 
     last_scan_result = f"{info.get('title', slug)}: تم إيجاد الحلقة {episode} وإرسال التنبيه ✅"
