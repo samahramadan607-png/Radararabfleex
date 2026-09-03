@@ -131,7 +131,7 @@ def scan_series(slug, info):
     series_id = info.get("series_id")
 
     # الإرسال إلى موقع arab flex
-    api_status = "لم يتم تحديد ID للمسلسل"
+    api_status = "لم يتم تحديد ID للمسلسل ❌"
     if series_id:
         payload = {
             "secret_key": SECRET_KEY,
@@ -245,40 +245,70 @@ def welcome(message):
             "🔹 <code>/del</code> — حذف مسلسل من المراقبة\n"
             "🔹 <code>/list</code> — عرض قائمة المسلسلات الحالية\n"
             "🔹 <code>/setep</code> — تعديل رقم آخر حلقة لمسلسل\n"
-            "🔹 <code>/setid</code> — إضافة أو تعديل ID المسلسل في الموقع\n"
+            "🔹 <code>/setid</code> — إضافة أو تعديل ID المسلسل بطريقة سهلة\n"
             "🔹 <code>/check</code> — عرض حالة البوت والإحصائيات\n"
             "🔹 <code>/scan</code> — إجبار البوت على الفحص فوراً",
             parse_mode="HTML",
         )
 
+# --- أوامر ربط الـ ID التفاعلية الجديدة ---
 @bot.message_handler(commands=["setid"])
-def set_series_id(message):
+def set_series_id_start(message):
     if not admin_only(message):
         return
+    data = load_series_data()
+    if not data:
+        bot.reply_to(message, "📭 لا توجد مسلسلات مضافة حالياً لربطها.")
+        return
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    for slug, info in data.items():
+        title = info.get("title", slug)
+        markup.add(InlineKeyboardButton(text=f"🔗 ربط ID: {title}", callback_data=f"setid_{slug}"))
+    
+    bot.reply_to(message, "⚙️ <b>اختر المسلسل الذي تريد ربطه بـ ID الموقع:</b>", reply_markup=markup, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('setid_'))
+def process_setid_callback(call):
+    slug = call.data.split('setid_')[1]
+    data = load_series_data()
+    
+    if slug in data:
+        title = html.escape(data[slug].get("title", slug))
+        msg = bot.send_message(
+            call.message.chat.id, 
+            f"🔢 أرسل الآن <b>رقم الـ ID</b> الخاص بمسلسل (<b>{title}</b>) في موقعك (أرقام فقط):", 
+            parse_mode="HTML"
+        )
+        bot.register_next_step_handler(msg, save_series_id_step, slug)
+        bot.answer_callback_query(call.id)
+    else:
+        bot.answer_callback_query(call.id, "⚠️ المسلسل غير موجود أو تم حذفه!", show_alert=True)
+
+def save_series_id_step(message, slug):
+    if message.text.startswith('/'): return
     try:
-        slug, series_id = message.text.split()[1:3]
-        data = load_series_data()
-        if slug not in data:
-            bot.reply_to(message, "⚠️ <b>المسلسل غير موجود في قائمة المتابعة.</b>", parse_mode="HTML")
-            return
-        
-        data[slug]["series_id"] = int(series_id)
+        series_id = int(message.text.strip())
+    except ValueError:
+        bot.reply_to(message, "❌ خطأ: الـ ID يجب أن يكون رقماً فقط. أعد المحاولة مرة أخرى بالضغط على /setid")
+        return
+
+    data = load_series_data()
+    if slug in data:
+        data[slug]["series_id"] = series_id
         save_series_data(data)
         
         clean_title = html.escape(data[slug].get("title", slug))
         bot.reply_to(
             message, 
-            f"✅ <b>تم ربط المسلسل بالموقع!</b>\n"
+            f"✅ <b>تم ربط المسلسل بالموقع بنجاح!</b>\n"
             f"📺 المسلسل: <b>{clean_title}</b>\n"
             f"🔢 الـ ID في الموقع: <b>{series_id}</b>", 
             parse_mode="HTML"
         )
-    except (IndexError, ValueError):
-        bot.reply_to(
-            message, 
-            "❌ <b>خطأ! الصيغة الصحيحة هي:</b>\n<code>/setid slug ID</code>\n\n💡 مثال: <code>/setid bnj-kuly 271</code>", 
-            parse_mode="HTML"
-        )
+    else:
+        bot.reply_to(message, "⚠️ حدث خطأ، لم يتم العثور على المسلسل.")
+# ----------------------------------------
 
 @bot.message_handler(commands=["add"])
 def add_series_start(message):
@@ -443,5 +473,5 @@ def force_check(message):
 
 if __name__ == "__main__":
     threading.Thread(target=auto_checker_loop, daemon=True).start()
-    print("Bot is running with InfinityFree API integration...", flush=True)
+    print("Bot is running with Interactive SetID...", flush=True)
     bot.infinity_polling()
