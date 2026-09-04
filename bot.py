@@ -142,13 +142,16 @@ def scan_series(slug, info):
             "links_string": links_string
         }
         try:
-            res = requests.post(API_URL, data=payload, timeout=15)
+            # إضافة User-Agent وهمي لخداع حماية الاستضافة أو كلاودفلير
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            res = requests.post(API_URL, data=payload, headers=headers, timeout=20)
             if "INSERTED" in res.text:
                 api_status = "تمت الإضافة للموقع بنجاح ✅"
             else:
                 api_status = f"خطأ في الإضافة: {res.text}"
         except Exception as e:
-            api_status = "فشل الاتصال بالموقع ❌"
+            # طباعة الخطأ الفعلي القادم من السيرفر لمعرفة السبب بدقة
+            api_status = f"فشل الاتصال بالموقع ❌\n<code>{str(e)}</code>"
 
     final_message = (
         f"📺 <b>المسلسل:</b> {title}\n"
