@@ -4,12 +4,15 @@ import os
 import re
 import threading
 import time
+import binascii
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import requests
 import urllib3
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from Crypto.Cipher import AES
 
 # تعطيل تحذيرات عدم التحقق من شهادة SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -33,6 +36,35 @@ last_scan_at = None
 scan_cycles = 0
 total_added = 0
 last_scan_result = "لم يبدأ فحص بعد"
+
+# ==========================================
+# دالة تخطي حماية InfinityFree
+# ==========================================
+def get_infinity_session(url):
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
+    try:
+        res = session.get(url, timeout=15, verify=False)
+        if "toNumbers" in res.text and "slowAES.decrypt" in res.text:
+            a_match = re.search(r'a=toNumbers\("([a-f0-9]+)"\)', res.text)
+            b_match = re.search(r'b=toNumbers\("([a-f0-9]+)"\)', res.text)
+            c_match = re.search(r'c=toNumbers\("([a-f0-9]+)"\)', res.text)
+            
+            if a_match and b_match and c_match:
+                key = binascii.unhexlify(a_match.group(1))
+                iv = binascii.unhexlify(b_match.group(1))
+                cipher = AES.new(key, AES.MODE_CBC, iv)
+                decrypted = cipher.decrypt(binascii.unhexlify(c_match.group(1)))
+                cookie_val = binascii.hexlify(decrypted).decode('utf-8')
+                
+                parsed_url = urlparse(url)
+                session.cookies.set('__test', cookie_val, domain=parsed_url.netloc, path='/')
+                session.get(f"{url}?i=1", timeout=15, verify=False)
+    except Exception as e:
+        print(f"[ERROR] Infinity Session: {e}", flush=True)
+    return session
 
 def load_series_data():
     if not os.path.exists(DATA_FILE):
@@ -82,7 +114,7 @@ def check_link(url):
     try:
         response = requests.get(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
             timeout=8,
             stream=True,
             verify=False
@@ -146,8 +178,8 @@ def scan_series(slug, info):
             "links_string": links_string
         }
         try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-            res = requests.post(API_URL, data=payload, headers=headers, timeout=20, verify=False)
+            session = get_infinity_session(API_URL)
+            res = session.post(API_URL, data=payload, timeout=20, verify=False)
             if "INSERTED" in res.text:
                 api_status = "تمت الإضافة للموقع بنجاح ✅"
             else:
@@ -287,12 +319,11 @@ def test_api_command(message):
         "links_string": "1080|https://test.com/vid.mp4"
     }
     
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-    
-    msg = bot.reply_to(message, "⏳ جاري إرسال حلقة وهمية (999) لاختبار الاتصال بالموقع...")
+    msg = bot.reply_to(message, "⏳ جاري إرسال حلقة وهمية (999) لاختبار الاتصال بالموقع مع فك تشفير الحماية...")
     
     try:
-        res = requests.post(API_URL, data=payload, headers=headers, timeout=20, verify=False)
+        session = get_infinity_session(API_URL)
+        res = session.post(API_URL, data=payload, timeout=20, verify=False)
         
         if "INSERTED" in res.text:
             bot.edit_message_text(f"✅ **نجح الاتصال!**\nتمت إضافة الحلقة 999 بنجاح للمسلسل (ID: {series_id}).\n\n(لا تنسَ حذفها من لوحة تحكم موقعك لاحقاً).", msg.chat.id, msg.message_id)
@@ -493,5 +524,5 @@ def force_check(message):
 
 if __name__ == "__main__":
     threading.Thread(target=auto_checker_loop, daemon=True).start()
-    print("Bot is running with SSL verification bypassed...", flush=True)
+    print("Bot is running with AES bypass & SSL ignore...", flush=True)
     bot.infinity_polling()
