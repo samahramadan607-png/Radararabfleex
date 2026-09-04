@@ -7,8 +7,12 @@ import time
 from datetime import datetime, timezone
 
 import requests
+import urllib3
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# تعطيل تحذيرات عدم التحقق من شهادة SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BOT_TOKEN = "7808630939:AAEY0_q6vnkKlMRjvXNmEXwK1G80hv0vghY"
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "1013251619")
@@ -78,9 +82,10 @@ def check_link(url):
     try:
         response = requests.get(
             url,
-            headers={"User-Agent": "EpisodeChecker/1.0"},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
             timeout=8,
             stream=True,
+            verify=False
         )
         content_type = response.headers.get("Content-Type", "").lower()
         content_length = response.headers.get("Content-Length")
@@ -130,8 +135,7 @@ def scan_series(slug, info):
     title = info.get("title", slug)
     series_id = info.get("series_id")
 
-    # الإرسال إلى موقع arab flex
-    api_status = "لم يتم تحديد ID للمسلسل ❌"
+    api_status = "لم يتم تحديد ID للمسلسل"
     if series_id:
         payload = {
             "secret_key": SECRET_KEY,
@@ -143,14 +147,13 @@ def scan_series(slug, info):
         }
         try:
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-            res = requests.post(API_URL, data=payload, headers=headers, timeout=20)
+            res = requests.post(API_URL, data=payload, headers=headers, timeout=20, verify=False)
             if "INSERTED" in res.text:
                 api_status = "تمت الإضافة للموقع بنجاح ✅"
             else:
                 api_status = f"خطأ في الإضافة: {res.text}"
         except Exception as e:
-            # طباعة الخطأ الفعلي القادم من السيرفر لمعرفة السبب بدقة
-            api_status = f"فشل الاتصال بالموقع ❌\n<code>{str(e)}</code>"
+            api_status = f"فشل الاتصال: {str(e)}"
 
     final_message = (
         f"📺 <b>المسلسل:</b> {title}\n"
@@ -247,116 +250,85 @@ def welcome(message):
             "🔹 <code>/del</code> — حذف مسلسل من المراقبة\n"
             "🔹 <code>/list</code> — عرض قائمة المسلسلات الحالية\n"
             "🔹 <code>/setep</code> — تعديل رقم آخر حلقة لمسلسل\n"
-            "🔹 <code>/setid</code> — إضافة أو تعديل ID المسلسل بطريقة سهلة\n"
-            "🔹 <code>/testapi</code> — تجربة الاتصال بالموقع (حلقة وهمية)\n"
+            "🔹 <code>/setid</code> — إضافة أو تعديل ID المسلسل في الموقع\n"
             "🔹 <code>/check</code> — عرض حالة البوت والإحصائيات\n"
-            "🔹 <code>/scan</code> — إجبار البوت على الفحص فوراً",
+            "🔹 <code>/scan</code> — إجبار البوت على الفحص فوراً\n"
+            "🔹 <code>/testapi</code> — إرسال حلقة وهمية لاختبار الموقع",
             parse_mode="HTML",
         )
 
 @bot.message_handler(commands=["testapi"])
-def test_api_connection(message):
-    if not admin_only(message): return
+def test_api_command(message):
+    if not admin_only(message):
+        return
+    
     try:
-        parts = message.text.split()
-        if len(parts) < 2:
-            bot.reply_to(message, "❌ أرسل الأمر مع المعرف، مثال: <code>/testapi bnj-kuly</code>", parse_mode="HTML")
-            return
-            
-        slug = parts[1]
-        data = load_series_data()
+        slug = message.text.split()[1]
+    except IndexError:
+        bot.reply_to(message, "❌ <b>خطأ:</b> اكتب الأمر وبجواره مُعرف المسلسل.\nمثال: <code>/testapi Ahmr-wla-Abyd</code>", parse_mode="HTML")
+        return
         
-        if slug not in data or not data[slug].get("series_id"):
-            bot.reply_to(message, "⚠️ المسلسل غير موجود أو لم يتم ربطه بـ ID.")
-            return
-            
-        series_id = data[slug]["series_id"]
-        fake_ep = 999
-        links_string = "720|https://test.com/fake_video.mp4"
+    data = load_series_data()
+    if slug not in data:
+        bot.reply_to(message, "⚠️ <b>المسلسل غير موجود.</b>", parse_mode="HTML")
+        return
         
-        payload = {
-            "secret_key": SECRET_KEY,
-            "action": "insert",
-            "series_id": series_id,
-            "title": f"الحلقة {fake_ep} (تجربة)",
-            "episode_number": fake_ep,
-            "links_string": links_string
-        }
-        
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-        
-        msg = bot.reply_to(message, "⏳ جاري إرسال حلقة وهمية (999) لاختبار الاتصال بالموقع...")
-        
-        res = requests.post(API_URL, data=payload, headers=headers, timeout=20)
+    series_id = data[slug].get("series_id")
+    if not series_id:
+        bot.reply_to(message, "❌ <b>هذا المسلسل ليس له ID مربوط بالموقع.</b>", parse_mode="HTML")
+        return
+
+    payload = {
+        "secret_key": SECRET_KEY,
+        "action": "insert",
+        "series_id": series_id,
+        "title": "حلقة تجريبية (999)",
+        "episode_number": 999,
+        "links_string": "1080|https://test.com/vid.mp4"
+    }
+    
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    
+    msg = bot.reply_to(message, "⏳ جاري إرسال حلقة وهمية (999) لاختبار الاتصال بالموقع...")
+    
+    try:
+        res = requests.post(API_URL, data=payload, headers=headers, timeout=20, verify=False)
         
         if "INSERTED" in res.text:
             bot.edit_message_text(f"✅ **نجح الاتصال!**\nتمت إضافة الحلقة 999 بنجاح للمسلسل (ID: {series_id}).\n\n(لا تنسَ حذفها من لوحة تحكم موقعك لاحقاً).", msg.chat.id, msg.message_id)
-        elif "already exists" in res.text:
-            bot.edit_message_text("⚠️ الاتصال ناجح، ولكن الحلقة 999 موجودة بالفعل في قاعدة البيانات.", msg.chat.id, msg.message_id)
         else:
-            bot.edit_message_text(f"❌ **فشل الإرسال.** الرد من الاستضافة:\n<code>{html.escape(res.text)}</code>", msg.chat.id, msg.message_id, parse_mode="HTML")
-            
+            bot.edit_message_text(f"⚠️ **رد غير متوقع من الموقع:**\n`{res.text}`", msg.chat.id, msg.message_id, parse_mode="Markdown")
     except Exception as e:
-        bot.reply_to(message, f"❌ **خطأ برمجي أو فشل في الاتصال:**\n<code>{str(e)}</code>", parse_mode="HTML")
+        bot.edit_message_text(f"❌ **خطأ برمجي أو فشل في الاتصال:**\n`{str(e)}`", msg.chat.id, msg.message_id, parse_mode="Markdown")
 
-# --- أوامر ربط الـ ID التفاعلية الجديدة ---
 @bot.message_handler(commands=["setid"])
-def set_series_id_start(message):
+def set_series_id(message):
     if not admin_only(message):
         return
-    data = load_series_data()
-    if not data:
-        bot.reply_to(message, "📭 لا توجد مسلسلات مضافة حالياً لربطها.")
-        return
-    
-    markup = InlineKeyboardMarkup(row_width=1)
-    for slug, info in data.items():
-        title = info.get("title", slug)
-        markup.add(InlineKeyboardButton(text=f"🔗 ربط ID: {title}", callback_data=f"setid_{slug}"))
-    
-    bot.reply_to(message, "⚙️ <b>اختر المسلسل الذي تريد ربطه بـ ID الموقع:</b>", reply_markup=markup, parse_mode="HTML")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('setid_'))
-def process_setid_callback(call):
-    slug = call.data.split('setid_')[1]
-    data = load_series_data()
-    
-    if slug in data:
-        title = html.escape(data[slug].get("title", slug))
-        msg = bot.send_message(
-            call.message.chat.id, 
-            f"🔢 أرسل الآن <b>رقم الـ ID</b> الخاص بمسلسل (<b>{title}</b>) في موقعك (أرقام فقط):", 
-            parse_mode="HTML"
-        )
-        bot.register_next_step_handler(msg, save_series_id_step, slug)
-        bot.answer_callback_query(call.id)
-    else:
-        bot.answer_callback_query(call.id, "⚠️ المسلسل غير موجود أو تم حذفه!", show_alert=True)
-
-def save_series_id_step(message, slug):
-    if message.text.startswith('/'): return
     try:
-        series_id = int(message.text.strip())
-    except ValueError:
-        bot.reply_to(message, "❌ خطأ: الـ ID يجب أن يكون رقماً فقط. أعد المحاولة مرة أخرى بالضغط على /setid")
-        return
-
-    data = load_series_data()
-    if slug in data:
-        data[slug]["series_id"] = series_id
+        slug, series_id = message.text.split()[1:3]
+        data = load_series_data()
+        if slug not in data:
+            bot.reply_to(message, "⚠️ <b>المسلسل غير موجود في قائمة المتابعة.</b>", parse_mode="HTML")
+            return
+        
+        data[slug]["series_id"] = int(series_id)
         save_series_data(data)
         
         clean_title = html.escape(data[slug].get("title", slug))
         bot.reply_to(
             message, 
-            f"✅ <b>تم ربط المسلسل بالموقع بنجاح!</b>\n"
+            f"✅ <b>تم ربط المسلسل بالموقع!</b>\n"
             f"📺 المسلسل: <b>{clean_title}</b>\n"
             f"🔢 الـ ID في الموقع: <b>{series_id}</b>", 
             parse_mode="HTML"
         )
-    else:
-        bot.reply_to(message, "⚠️ حدث خطأ، لم يتم العثور على المسلسل.")
-# ----------------------------------------
+    except (IndexError, ValueError):
+        bot.reply_to(
+            message, 
+            "❌ <b>خطأ! الصيغة الصحيحة هي:</b>\n<code>/setid slug ID</code>\n\n💡 مثال: <code>/setid bnj-kuly 271</code>", 
+            parse_mode="HTML"
+        )
 
 @bot.message_handler(commands=["add"])
 def add_series_start(message):
@@ -521,5 +493,5 @@ def force_check(message):
 
 if __name__ == "__main__":
     threading.Thread(target=auto_checker_loop, daemon=True).start()
-    print("Bot is running with Interactive SetID...", flush=True)
+    print("Bot is running with SSL verification bypassed...", flush=True)
     bot.infinity_polling()
