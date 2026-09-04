@@ -142,7 +142,6 @@ def scan_series(slug, info):
             "links_string": links_string
         }
         try:
-            # إضافة User-Agent وهمي لخداع حماية الاستضافة أو كلاودفلير
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
             res = requests.post(API_URL, data=payload, headers=headers, timeout=20)
             if "INSERTED" in res.text:
@@ -249,10 +248,56 @@ def welcome(message):
             "🔹 <code>/list</code> — عرض قائمة المسلسلات الحالية\n"
             "🔹 <code>/setep</code> — تعديل رقم آخر حلقة لمسلسل\n"
             "🔹 <code>/setid</code> — إضافة أو تعديل ID المسلسل بطريقة سهلة\n"
+            "🔹 <code>/testapi</code> — تجربة الاتصال بالموقع (حلقة وهمية)\n"
             "🔹 <code>/check</code> — عرض حالة البوت والإحصائيات\n"
             "🔹 <code>/scan</code> — إجبار البوت على الفحص فوراً",
             parse_mode="HTML",
         )
+
+@bot.message_handler(commands=["testapi"])
+def test_api_connection(message):
+    if not admin_only(message): return
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message, "❌ أرسل الأمر مع المعرف، مثال: <code>/testapi bnj-kuly</code>", parse_mode="HTML")
+            return
+            
+        slug = parts[1]
+        data = load_series_data()
+        
+        if slug not in data or not data[slug].get("series_id"):
+            bot.reply_to(message, "⚠️ المسلسل غير موجود أو لم يتم ربطه بـ ID.")
+            return
+            
+        series_id = data[slug]["series_id"]
+        fake_ep = 999
+        links_string = "720|https://test.com/fake_video.mp4"
+        
+        payload = {
+            "secret_key": SECRET_KEY,
+            "action": "insert",
+            "series_id": series_id,
+            "title": f"الحلقة {fake_ep} (تجربة)",
+            "episode_number": fake_ep,
+            "links_string": links_string
+        }
+        
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        
+        msg = bot.reply_to(message, "⏳ جاري إرسال حلقة وهمية (999) لاختبار الاتصال بالموقع...")
+        
+        res = requests.post(API_URL, data=payload, headers=headers, timeout=20)
+        
+        if "INSERTED" in res.text:
+            bot.edit_message_text(f"✅ **نجح الاتصال!**\nتمت إضافة الحلقة 999 بنجاح للمسلسل (ID: {series_id}).\n\n(لا تنسَ حذفها من لوحة تحكم موقعك لاحقاً).", msg.chat.id, msg.message_id)
+        elif "already exists" in res.text:
+            bot.edit_message_text("⚠️ الاتصال ناجح، ولكن الحلقة 999 موجودة بالفعل في قاعدة البيانات.", msg.chat.id, msg.message_id)
+        else:
+            bot.edit_message_text(f"❌ **فشل الإرسال.** الرد من الاستضافة:\n<code>{html.escape(res.text)}</code>", msg.chat.id, msg.message_id, parse_mode="HTML")
+            
+    except Exception as e:
+        bot.reply_to(message, f"❌ **خطأ برمجي أو فشل في الاتصال:**\n<code>{str(e)}</code>", parse_mode="HTML")
 
 # --- أوامر ربط الـ ID التفاعلية الجديدة ---
 @bot.message_handler(commands=["setid"])
