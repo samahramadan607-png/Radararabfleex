@@ -374,8 +374,8 @@ def process_restore(message):
 
         parsed_data = json.loads(raw_data)
         
-        with open(DATA_FILE, 'w', encoding='utf-8') as new_file:
-            json.dump(parsed_data, new_file, ensure_ascii=False, indent=2)
+        # الإصلاح: استخدام save_series_data لإنشاء المجلدات وحفظ الملف بشكل آمن
+        save_series_data(parsed_data)
             
         bot.reply_to(message, "✅ <b>تم استعادة البيانات بنجاح!</b>", parse_mode="HTML")
     except json.JSONDecodeError:
