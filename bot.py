@@ -25,7 +25,6 @@ SOURCE_DOMAINS = ["b2.shahidtv.net", "b1.shahidtv.net", "b3.shahidtv.net"]
 
 API_URL = "https://arabfleex.live/api_bot.php"
 SECRET_KEY = "ArabFleex_2024_SecRet"
-MAX_WAIT_HOURS = 6
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -35,11 +34,15 @@ last_scan_at = None
 scan_cycles = 0
 total_added = 0
 last_scan_result = "لم يبدأ فحص بعد"
+MAX_WAIT_HOURS = 6 # أقصى مدة للانتظار لاستكمال الجودات
 
+# ==========================================
+# دالة تخطي حماية InfinityFree
+# ==========================================
 def get_infinity_session(url):
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     })
     try:
         res = session.get(url, timeout=15, verify=False)
@@ -58,39 +61,54 @@ def get_infinity_session(url):
                 parsed_url = urlparse(url)
                 session.cookies.set('__test', cookie_val, domain=parsed_url.netloc, path='/')
     except Exception as e:
-        pass
+        print(f"[ERROR] Infinity Session: {e}", flush=True)
     return session
 
 def load_series_data():
-    if not os.path.exists(DATA_FILE): return {}
+    if not os.path.exists(DATA_FILE):
+        return {}
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as file:
             data = json.load(file)
         return data if isinstance(data, dict) else {}
-    except: return {}
+    except (OSError, ValueError) as error:
+        print(f"Error loading series data: {error}", flush=True)
+        return {}
 
 def save_series_data(data):
     parent = os.path.dirname(DATA_FILE)
-    if parent: os.makedirs(parent, exist_ok=True)
-    with open(f"{DATA_FILE}.tmp", "w", encoding="utf-8") as file:
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    temporary_file = f"{DATA_FILE}.tmp"
+    with open(temporary_file, "w", encoding="utf-8") as file:
         json.dump(data, file, ensure_ascii=False, indent=2)
-    os.replace(f"{DATA_FILE}.tmp", DATA_FILE)
+    os.replace(temporary_file, DATA_FILE)
 
+# ==========================================
+# توليد الروابط للمسلسلات
+# ==========================================
 def candidate_urls_series(slug, season, episode, region):
-    regions = list(dict.fromkeys([region, "EG", "LB", "SA", "SY", "MA", "TR"]))
+    regions = list(dict.fromkeys([region, "EG", "LB", "SA", "SY", "MA"]))
     qualities = ["360p", "480p", "720p", "1080p"]
     episode_codes = [f"EP{episode:03d}", f"EP{episode:02d}"]
-    suffixes = {q: [f"-{q}-v3.mp4", f"-{q}-v2.mp4", f"-{q}.mp4", f"-{q}-v1.mp4", f"-{q}-v4.mp4"] for q in qualities}
+    suffixes = {
+        q: [f"-{q}-v3.mp4", f"-{q}-v2.mp4", f"-{q}.mp4", f"-{q}-v1.mp4", f"-{q}-v4.mp4"] for q in qualities
+    }
     for quality in qualities:
         for domain in SOURCE_DOMAINS:
             for item_region in regions:
-                for ep_code in episode_codes:
+                for episode_code in episode_codes:
                     for suffix in suffixes[quality]:
-                        yield quality, f"https://{domain}/files/{item_region}/{slug}/{slug}-S{season:02d}-{ep_code}{suffix}"
+                        yield quality, f"https://{domain}/files/{item_region}/{slug}/{slug}-S{season:02d}-{episode_code}{suffix}"
 
+# ==========================================
+# توليد الروابط لعروض المصارعة
+# ==========================================
 def candidate_urls_wrestling(slug, date_str):
     qualities = ["360p", "480p", "720p", "1080p"]
-    suffixes = {q: [f"-{q}-v3.mp4", f"-{q}-v2.mp4", f"-{q}.mp4", f"-{q}-v1.mp4", f"-{q}-v4.mp4"] for q in qualities}
+    suffixes = {
+        q: [f"-{q}-v3.mp4", f"-{q}-v2.mp4", f"-{q}.mp4", f"-{q}-v1.mp4", f"-{q}-v4.mp4"] for q in qualities
+    }
     for quality in qualities:
         for domain in SOURCE_DOMAINS:
             for suffix in suffixes[quality]:
@@ -98,107 +116,157 @@ def candidate_urls_wrestling(slug, date_str):
 
 def check_link(url):
     try:
-        response = requests.head(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5, verify=False)
+        response = requests.head(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=8,
+            verify=False
+        )
         content_type = response.headers.get("Content-Type", "").lower()
         content_length = response.headers.get("Content-Length")
-        if response.status_code != 200 or ("video/" not in content_type and "octet-stream" not in content_type): return False
+        has_video_type = (not content_type or "video/" in content_type or "application/octet-stream" in content_type)
+        
+        if response.status_code != 200 or not has_video_type: return False
         if content_length and content_length.isdigit() and int(content_length) < 100_000: return False
         return True
-    except: return False
+    except requests.RequestException:
+        return False
 
-def send_to_site(series_id, title, episode_number, links_string):
-    payload = {
-        "secret_key": SECRET_KEY,
-        "action": "insert",
-        "series_id": series_id,
-        "title": title,
-        "episode_number": episode_number,
-        "links_string": links_string
-    }
-    try:
-        session = get_infinity_session(API_URL)
-        res = session.post(API_URL, data=payload, timeout=20, verify=False)
-        if "INSERTED" in res.text: return "تم الإضافة بنجاح ✅"
-        if "UPDATED" in res.text: return "تم تحديث الجودات ✅"
-        return f"خطأ: {res.text}"
-    except Exception as e:
-        return f"فشل الاتصال: {str(e)}"
-
+# ==========================================
+# عملية الفحص الأساسية (للمسلسلات والمصارعة)
+# ==========================================
 def scan_item(slug, info):
+    global last_scan_result
     item_type = info.get("type", "series")
     links = {}
+    attempts = 0
+    state_changed = False
 
-    # تحديد الحلقة القادمة أو العرض القادم
     if item_type == "wrestling":
         last_date_str = info.get("last_date", "2026-01-01")
-        target_ep = int(info.get("last_ep", 0)) + 1
+        last_ep = int(info.get("last_ep", 0))
         date_obj = datetime.strptime(last_date_str, "%Y-%m-%d")
-        next_date_str = (date_obj + timedelta(days=7)).strftime("%Y-%m-%d")
+        next_date_obj = date_obj + timedelta(days=7)
+        next_date_str = next_date_obj.strftime("%Y-%m-%d")
+        target_episode = last_ep + 1
         
-        # إذا كان يتم تتبع هذا العرض حالياً، نستخدم نفس التاريخ المستهدف، وإلا نبحث في التاريخ الجديد
+        # استخدام التاريخ المستهدف بناءً على ما إذا كنا نتبع عرضًا حاليًا أم نبحث عن جديد
         current_track_id = info.get("track_id")
         target_date_to_scan = next_date_str if current_track_id is None else current_track_id.split('_')[1]
         
-        for q, url in candidate_urls_wrestling(slug, target_date_to_scan):
-            if q not in links and check_link(url): links[q] = url
-            
+        for quality, url in candidate_urls_wrestling(slug, target_date_to_scan):
+            if quality in links: continue
+            attempts += 1
+            if check_link(url):
+                links[quality] = url
+                
         display_title = target_date_to_scan.replace("-", ".")
-        target_id = f"{target_ep}_{target_date_to_scan}"
+        target_id = f"{target_episode}_{target_date_to_scan}"
     else:
-        target_ep = int(info.get("last_ep", 0)) + 1
+        # مسلسلات
+        target_episode = int(info.get("last_ep", 0)) + 1
         season = int(info.get("season", 1))
-        for q, url in candidate_urls_series(slug, season, target_ep, str(info.get("region", "EG")).upper()):
-            if q not in links and check_link(url): links[q] = url
-            
-        display_title = f"الحلقة {target_ep}"
-        target_id = str(target_ep)
+        
+        for quality, url in candidate_urls_series(slug, season, target_episode, str(info.get("region", "EG")).upper()):
+            if quality in links: continue
+            attempts += 1
+            if check_link(url):
+                links[quality] = url
+                
+        display_title = f"الحلقة {target_episode}"
+        target_id = str(target_episode)
         next_date_str = None
 
-    if not links: return False
+    if not links:
+        last_scan_result = f"{info.get('title', slug)}: الفحص لم يجد جديد (تم فحص {attempts} رابط)"
+        return False
 
+    title = info.get("title", slug)
     series_id = info.get("series_id")
     found_keys = list(links.keys())
     formatted_links = [f"{q.replace('p', '')}|{links[q]}" for q in ["360p", "480p", "720p", "1080p"] if q in links]
     links_string = ",".join(formatted_links)
     
     current_track_id = info.get("track_id")
-    state_changed = False
 
-    # 1. اكتشاف مبدئي (لأول مرة نلاقي الحلقة)
+    # ==========================================
+    # 1. اكتشاف مبدئي (الحلقة بتنزل لأول مرة)
+    # ==========================================
     if current_track_id != target_id:
-        api_status = send_to_site(series_id, display_title, target_ep, links_string) if series_id else "No ID"
-        msg = f"🎬 <b>اكتشاف مبدئي:</b> {info.get('title', slug)}\n📺 <b>{display_title}</b>\n📶 <b>الجودات:</b> {len(links)}/4 ({', '.join(found_keys)})\n🌐 <b>الموقع:</b> {api_status}"
+        api_status = "لم يتم تحديد ID"
+        if series_id:
+            payload = {
+                "secret_key": SECRET_KEY, "action": "insert", "series_id": series_id,
+                "title": display_title, "episode_number": target_episode, "links_string": links_string
+            }
+            try:
+                session = get_infinity_session(API_URL)
+                res = session.post(API_URL, data=payload, timeout=20, verify=False)
+                if "INSERTED" in res.text: api_status = "تمت الإضافة للموقع بنجاح ✅"
+                elif "already exists" in res.text: api_status = "موجودة مسبقاً ⚠️"
+                else: api_status = f"خطأ: {res.text}"
+            except Exception as e: api_status = f"فشل الاتصال: {e}"
+
+        msg = (
+            f"🎬 <b>اكتشاف مبدئي:</b> {title}\n"
+            f"📺 <b>{display_title}</b>\n"
+            f"📶 <b>الجودات المتاحة:</b> {len(links)}/4 ({', '.join(found_keys)})\n"
+            f"🌐 <b>الموقع:</b> {api_status}\n\n"
+            f"⏳ <i>سيتم مراقبة الجودات المتبقية لمدة {MAX_WAIT_HOURS} ساعات...</i>"
+        )
         bot.send_message(ADMIN_CHAT_ID, msg, parse_mode="HTML")
         
-        # لو نزلت الـ 4 جودات مرة واحدة، نقفلها ونستعد للي بعدها
+        # إذا نزلت الـ 4 جودات فوراً، نغلق الحلقة
         if len(links) >= 4:
-            info["last_ep"] = target_ep
-            if item_type == "wrestling": info["last_date"] = next_date_str
+            info["last_ep"] = target_episode
+            if item_type == "wrestling": info["last_date"] = target_date_to_scan
             info.pop("track_id", None); info.pop("track_start", None); info.pop("track_qualities", None)
         else:
-            # لو أقل من 4، نحفظها عشان نكمل عليها
+            # إذا لم تكتمل، نبدأ التتبع
             info["track_id"] = target_id
             info["track_start"] = time.time()
             info["track_qualities"] = found_keys
         state_changed = True
 
-    # 2. إحنا بنتابع الحلقة دي ومستنيين جودات زيادة
+    # ==========================================
+    # 2. حلقة تحت التتبع (نبحث عن جودات إضافية)
+    # ==========================================
     else:
         tracked_qualities = info.get("track_qualities", [])
         new_qualities = [q for q in found_keys if q not in tracked_qualities]
         
-        # لو لقينا جودات جديدة (مثلاً الـ 720 نزلت)
         if new_qualities:
-            api_status = send_to_site(series_id, display_title, target_ep, links_string) if series_id else "No ID"
-            msg = f"🔄 <b>تحديث جودات:</b> {info.get('title', slug)}\n📺 <b>{display_title}</b>\n🆕 <b>تم إضافة:</b> {', '.join(new_qualities)}\n🌐 <b>الموقع:</b> {api_status}"
+            api_status = "لم يتم التحديث"
+            if series_id:
+                # نرسل طلب UPDATE بدلاً من INSERT
+                payload = {
+                    "secret_key": SECRET_KEY, "action": "update", "series_id": series_id,
+                    "title": display_title, "episode_number": target_episode, "links_string": links_string
+                }
+                try:
+                    session = get_infinity_session(API_URL)
+                    res = session.post(API_URL, data=payload, timeout=20, verify=False)
+                    if "UPDATED" in res.text: api_status = "تم تحديث الجودات في الموقع ✅"
+                    else: api_status = f"خطأ: {res.text}"
+                except Exception as e: api_status = f"فشل الاتصال: {e}"
+                
+            msg = (
+                f"🔄 <b>تحديث جودات:</b> {title}\n"
+                f"📺 <b>{display_title}</b>\n"
+                f"🆕 <b>تم إضافة:</b> {', '.join(new_qualities)}\n"
+                f"🌐 <b>الموقع:</b> {api_status}"
+            )
             bot.send_message(ADMIN_CHAT_ID, msg, parse_mode="HTML")
             info["track_qualities"] = found_keys
             state_changed = True
             
-        # فحص الإغلاق (6 ساعات أو اكتمال الـ 4 جودات)
+        # فحص إغلاق الحلقة (إذا اكتملت 4 جودات أو انتهى الوقت)
         time_elapsed = time.time() - info.get("track_start", 0)
         if len(links) >= 4 or time_elapsed > (MAX_WAIT_HOURS * 3600):
-            info["last_ep"] = target_ep
+            reason = "اكتمال الـ 4 جودات 🌟" if len(links) >= 4 else f"انتهاء مهلة الـ {MAX_WAIT_HOURS} ساعات ⏱"
+            bot.send_message(ADMIN_CHAT_ID, f"🔒 <b>تم إغلاق تتبع:</b> {title} ({display_title})\nالسبب: {reason}", parse_mode="HTML")
+            
+            info["last_ep"] = target_episode
             if item_type == "wrestling": info["last_date"] = target_id.split('_')[1]
             info.pop("track_id", None); info.pop("track_start", None); info.pop("track_qualities", None)
             state_changed = True
@@ -217,189 +285,253 @@ def scan_all_series_once():
             if scan_item(slug, info):
                 total_added += 1
                 save_series_data(data)
-                results.append(f"تحديث: {info.get('title', slug)}")
+                results.append(f"{info.get('title', slug)}: تم التحديث ✅")
+            else:
+                results.append(last_scan_result)
             time.sleep(2)
-        return results or ["لا جديد"]
-    except Exception as e:
-        print(e)
+        return results
     finally:
         scan_lock.release()
 
 def auto_checker_loop():
     while True:
-        scan_all_series_once()
+        try: scan_all_series_once()
+        except Exception as error: print(f"[ERROR] Checker loop: {error}", flush=True)
         time.sleep(CHECK_INTERVAL_SECONDS)
 
-# ===============================
-# أوامر البوت
-# ===============================
+def format_duration(total_seconds):
+    seconds = max(0, int(total_seconds))
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    return f"{hours}س {minutes}د {seconds}ث"
+
+def status_message():
+    uptime = (datetime.now(timezone.utc) - started_at).total_seconds()
+    data = load_series_data()
+    lines = [
+        "✅ <b>البوت شغّال وبيفحص بانتظام!</b>\n",
+        f"⏱ <b>وقت التشغيل:</b> {format_duration(uptime)}",
+        f"🔍 <b>آخر فحص:</b> {last_scan_at.astimezone().strftime('%Y-%m-%d %H:%M:%S') if last_scan_at else 'لم يبدأ'}",
+        f"🔄 <b>دورات الفحص:</b> {scan_cycles} | ➕ <b>الإشعارات:</b> {total_added}\n",
+        "📺 <b>آخر حالة:</b>",
+    ]
+    if not data:
+        lines.append("  لا توجد عناصر مضافة.")
+    else:
+        for slug, info in data.items():
+            title = html.escape(str(info.get("title", slug)))
+            series_id = info.get("series_id", "❌")
+            state = "⏳ يراقب الجودات..." if "track_id" in info else "✅ مكتمل"
+            
+            if info.get("type") == "wrestling":
+                lines.append(f"  🥊 <b>{title}</b> (ID: {series_id}): آخر عرض {info.get('last_date')} (ح{info.get('last_ep')}) | {state}")
+            else:
+                lines.append(f"  🎬 <b>{title}</b> (ID: {series_id}): حلقة {info.get('last_ep', 0)} | {state}")
+    return "\n".join(lines)
+
+def admin_only(message):
+    return str(message.chat.id) == str(ADMIN_CHAT_ID)
+
 @bot.message_handler(commands=["start", "help"])
 def welcome(message):
-    bot.reply_to(message, "🤖 النظام الشامل الذكي (إضافة + تحديث جودات)\n/add | /del | /list | /status | /backup | /restore | /setep | /setdate | /testapi")
+    if admin_only(message):
+        bot.reply_to(message, "🤖 <b>نظام المراقبة (مسلسلات ومصارعة)</b>\n\n🔹 <code>/add</code> — إضافة جديد\n🔹 <code>/del</code> — حذف\n🔹 <code>/list</code> — قائمة\n🔹 <code>/setep</code> — تعديل حلقة مسلسل\n🔹 <code>/setdate</code> — تعديل تاريخ مصارعة\n🔹 <code>/check</code> أو <code>/status</code> — الحالة\n🔹 <code>/scan</code> — فحص يدوي\n🔹 <code>/backup</code> — أخذ نسخة\n🔹 <code>/restore</code> — استعادة نسخة", parse_mode="HTML")
 
-@bot.message_handler(commands=["status"])
-def bot_status(message):
-    global started_at, last_scan_at, scan_cycles, total_added
-    
-    uptime = datetime.now(timezone.utc) - started_at
-    hours, remainder = divmod(uptime.seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    uptime_str = f"{uptime.days} أيام, {hours} ساعات, {minutes} دقائق"
-    
-    last_scan_str = last_scan_at.strftime("%Y-%m-%d %H:%M:%S UTC") if last_scan_at else "لم يبدأ بعد"
-    
-    msg = (
-        f"🤖 <b>إحصائيات البوت:</b>\n\n"
-        f"⏱️ <b>مدة التشغيل:</b> {uptime_str}\n"
-        f"🔄 <b>دورات الفحص:</b> {scan_cycles}\n"
-        f"✅ <b>الإضافات والتحديثات:</b> {total_added}\n"
-        f"🕒 <b>آخر فحص تم:</b> {last_scan_str}\n"
-    )
-    bot.reply_to(message, msg, parse_mode="HTML")
-
+# ==========================================
+# النسخ الاحتياطي والاستعادة
+# ==========================================
 @bot.message_handler(commands=["backup"])
 def backup_data(message):
+    if not admin_only(message): return
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "rb") as f: bot.send_document(message.chat.id, f, caption="✅ نسخة احتياطية")
-    else: bot.reply_to(message, "⚠️ لا توجد بيانات.")
+        with open(DATA_FILE, "rb") as f:
+            bot.send_document(message.chat.id, f, caption="✅ نسخة احتياطية (series.json)")
+    else:
+        bot.reply_to(message, "⚠️ لا توجد بيانات للنسخ.")
 
 @bot.message_handler(commands=["restore"])
 def restore_data_step(message):
-    msg = bot.reply_to(message, "📥 انسخ كود الـ JSON بالكامل والصقه هنا في رسالة عادية، أو ارفع الملف:")
+    if not admin_only(message): return
+    msg = bot.reply_to(message, "📥 <b>أرسل لي ملف series.json كرسالة (Document) أو انسخ محتواه كنص والصقه هنا:</b>", parse_mode="HTML")
     bot.register_next_step_handler(msg, process_restore)
 
 def process_restore(message):
+    if not admin_only(message): return
+    
+    raw_data = ""
     try:
+        # إذا أرسل ملف
         if message.document:
             file_info = bot.get_file(message.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
-            raw_data = downloaded_file.decode('utf-8', errors='ignore')
+            raw_data = downloaded_file.decode('utf-8')
+        # إذا أرسل نص
         elif message.text:
             raw_data = message.text
         else:
-            return bot.reply_to(message, "❌ لازم تبعت النص أو الملف.")
+            bot.reply_to(message, "❌ هذا ليس ملفاً ولا نصاً صالحاً.")
+            return
 
         parsed_data = json.loads(raw_data)
-        save_series_data(parsed_data)
-        bot.reply_to(message, "✅ تم استعادة البيانات بنجاح! راجع أمر /list")
-    except Exception as e: 
-        bot.reply_to(message, f"❌ خطأ: تأكد من نسخ الكود كاملاً.\n{str(e)}")
+        
+        with open(DATA_FILE, 'w', encoding='utf-8') as new_file:
+            json.dump(parsed_data, new_file, ensure_ascii=False, indent=2)
+            
+        bot.reply_to(message, "✅ <b>تم استعادة البيانات بنجاح!</b>", parse_mode="HTML")
+    except json.JSONDecodeError:
+         bot.reply_to(message, "❌ الكود المرسل ليس بصيغة JSON صحيحة. تأكد من نسخه بالكامل.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ حدث خطأ أثناء الاستعادة: {e}")
 
+# ==========================================
+# نظام الإضافة الذكي (مسلسلات / مصارعة)
+# ==========================================
 @bot.message_handler(commands=["add"])
 def add_item_start(message):
-    msg = bot.reply_to(message, "🔗 أرسل رابط الحلقة أو المصارعة:")
+    if not admin_only(message): return
+    msg = bot.reply_to(message, "🔗 <b>أرسل لي رابط الحلقة أو عرض المصارعة:</b>", parse_mode="HTML")
     bot.register_next_step_handler(msg, process_link_step)
 
 def process_link_step(message):
     if message.text.startswith('/'): return
     link = message.text.strip()
+    
     try:
         if "/wrestling/" in link.lower():
-            slug = link.split('/')[5]
-            date_str = re.search(r'-(\d{4}-\d{2}-\d{2})-', link).group(1)
-            msg = bot.reply_to(message, f"✅ مصارعة\nالمعرف: {slug}\nالتاريخ: {date_str}\n📝 أرسل اسم العرض بالعربي:")
-            bot.register_next_step_handler(msg, w_title_step, slug, date_str)
-        else:
+            # رابط مصارعة
             parts = link.split('/')
-            region, slug = parts[4], parts[5]
-            match = re.search(r'-S(\d+)-EP(\d+)', link, re.IGNORECASE)
-            season, episode = int(match.group(1)), int(match.group(2))
-            msg = bot.reply_to(message, f"✅ مسلسل\nالمعرف: {slug}\nالموسم: {season}\nالحلقة: {episode}\n📝 أرسل اسم المسلسل بالعربي:")
-            bot.register_next_step_handler(msg, s_title_step, slug, region, season, episode)
-    except: bot.reply_to(message, "❌ خطأ في قراءة الرابط.")
+            slug = parts[5]
+            filename = parts[-1]
+            match = re.search(r'-(\d{4}-\d{2}-\d{2})-', filename)
+            if match:
+                date_str = match.group(1)
+                msg = bot.reply_to(message, f"✅ تم اكتشاف <b>عرض مصارعة</b>!\nالمعرف: <code>{slug}</code>\nالتاريخ: <code>{date_str}</code>\n\n📝 أرسل <b>اسم العرض</b>:", parse_mode="HTML")
+                bot.register_next_step_handler(msg, w_title_step, slug, date_str)
+            else:
+                bot.reply_to(message, "❌ لم يتم العثور على تاريخ العرض في الرابط (YYYY-MM-DD).")
+        else:
+            # رابط مسلسل
+            parts = link.split('/')
+            region = parts[4]
+            slug = parts[5]
+            filename = parts[-1]
+            match = re.search(r'-S(\d+)-EP(\d+)', filename, re.IGNORECASE)
+            if match:
+                season = int(match.group(1))
+                episode = int(match.group(2))
+                msg = bot.reply_to(message, f"✅ تم اكتشاف <b>مسلسل</b>!\nالمعرف: <code>{slug}</code>\nالموسم: <code>{season}</code>\nالحلقة: <code>{episode}</code>\n\n📝 أرسل <b>اسم المسلسل</b>:", parse_mode="HTML")
+                bot.register_next_step_handler(msg, s_title_step, slug, region, season, episode)
+            else:
+                bot.reply_to(message, "❌ لم يتم العثور على S01-EP01 في الرابط.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ خطأ في قراءة الرابط: {e}")
 
-def w_title_step(m, slug, date_str):
-    title = m.text.strip()
-    msg = bot.reply_to(m, "🔢 أرسل الـ ID في موقعك (رقم):")
+# مسار المصارعة
+def w_title_step(message, slug, date_str):
+    if message.text.startswith('/'): return
+    title = message.text.strip()
+    msg = bot.reply_to(message, "🔢 أرسل <b>الـ ID</b> الخاص بالعرض في الموقع (رقم):", parse_mode="HTML")
     bot.register_next_step_handler(msg, w_id_step, slug, date_str, title)
 
-def w_id_step(m, slug, date_str, title):
-    series_id = int(m.text.strip())
-    msg = bot.reply_to(m, "🔢 أرسل رقم الحلقة الحالي للعرض في موقعك (الرقم اللي هنزود عليه):")
+def w_id_step(message, slug, date_str, title):
+    if message.text.startswith('/'): return
+    try: series_id = int(message.text.strip())
+    except ValueError: return bot.reply_to(message, "❌ يجب أن يكون الرقم صحيحاً.")
+    msg = bot.reply_to(message, "🔢 أرسل <b>رقم الحلقة الحالي</b> للعرض في موقعك (عشان أزود عليه المرة الجاية، لو لسه جديد اكتب 0):", parse_mode="HTML")
     bot.register_next_step_handler(msg, w_save_step, slug, date_str, title, series_id)
 
-def w_save_step(m, slug, date_str, title, series_id):
-    last_ep = int(m.text.strip())
+def w_save_step(message, slug, date_str, title, series_id):
+    if message.text.startswith('/'): return
+    try: last_ep = int(message.text.strip())
+    except ValueError: return bot.reply_to(message, "❌ يجب أن يكون الرقم صحيحاً.")
+    
     data = load_series_data()
     data[slug] = {"type": "wrestling", "title": title, "last_date": date_str, "last_ep": last_ep, "series_id": series_id}
     save_series_data(data)
-    bot.reply_to(m, "✅ تمت إضافة المصارعة بنجاح! سيتم البحث عن العرض القادم.")
+    bot.reply_to(message, f"✅ <b>تمت إضافة المصارعة!</b>\nسيبحث عن العرض التالي بعد 7 أيام من تاريخ {date_str}.", parse_mode="HTML")
 
-def s_title_step(m, slug, region, season, episode):
-    title = m.text.strip()
-    msg = bot.reply_to(m, "🔢 أرسل الـ ID في موقعك (رقم):")
+# مسار المسلسلات
+def s_title_step(message, slug, region, season, episode):
+    if message.text.startswith('/'): return
+    title = message.text.strip()
+    msg = bot.reply_to(message, "🔢 أرسل <b>الـ ID</b> الخاص بالمسلسل في الموقع (رقم):", parse_mode="HTML")
     bot.register_next_step_handler(msg, s_save_step, slug, region, season, episode, title)
 
-def s_save_step(m, slug, region, season, episode, title):
-    series_id = int(m.text.strip())
+def s_save_step(message, slug, region, season, episode, title):
+    if message.text.startswith('/'): return
+    try: series_id = int(message.text.strip())
+    except ValueError: return bot.reply_to(message, "❌ يجب أن يكون الرقم صحيحاً.")
+    
     data = load_series_data()
     data[slug] = {"type": "series", "title": title, "season": season, "last_ep": episode, "region": region, "series_id": series_id}
     save_series_data(data)
-    bot.reply_to(m, f"✅ تمت إضافة المسلسل! سيبحث عن حلقة {episode + 1}")
+    bot.reply_to(message, f"✅ <b>تمت إضافة المسلسل!</b>\nسيبحث عن الحلقة {episode + 1}", parse_mode="HTML")
 
+# ==========================================
+# أوامر التعديل والقوائم
+# ==========================================
 @bot.message_handler(commands=["setep"])
 def set_episode(message):
+    if not admin_only(message): return
     try:
         slug, episode = message.text.split()[1:3]
         data = load_series_data()
         if slug in data:
             data[slug]["last_ep"] = int(episode)
-            data[slug].pop("track_id", None)
             save_series_data(data)
-            bot.reply_to(message, f"✅ تم تعديل الحلقة السابقة إلى: {episode}. سيبحث عن: {int(episode)+1}")
-    except: bot.reply_to(message, "❌ الاستخدام الصحيح: /setep slug number")
+            bot.reply_to(message, f"✅ تم تعديل الحلقة السابقة إلى: <b>{episode}</b>\nسيبحث الآن عن حلقة: <b>{int(episode) + 1}</b>", parse_mode="HTML")
+    except: bot.reply_to(message, "❌ الصيغة: /setep slug number")
 
 @bot.message_handler(commands=["setdate"])
 def set_date(message):
+    if not admin_only(message): return
     try:
         slug, new_date = message.text.split()[1:3]
         data = load_series_data()
         if slug in data and data[slug].get("type") == "wrestling":
             data[slug]["last_date"] = new_date
-            data[slug].pop("track_id", None)
             save_series_data(data)
-            bot.reply_to(message, f"✅ تم تعديل تاريخ آخر عرض إلى: {new_date}")
-    except: pass
+            bot.reply_to(message, f"✅ تم تعديل آخر تاريخ للمصارعة إلى: <b>{new_date}</b>", parse_mode="HTML")
+    except: bot.reply_to(message, "❌ الصيغة: /setdate slug YYYY-MM-DD")
 
 @bot.message_handler(commands=["list"])
 def list_items(message):
-    data = load_series_data()
-    if not data: return bot.reply_to(message, "📭 القائمة فارغة.")
-    lines = ["📺 القائمة الحالية:"]
-    for slug, info in data.items():
-        state = "⏳ يجمع جودات" if "track_id" in info else "✅ مكتمل"
-        if info.get("type") == "wrestling":
-            lines.append(f"🥊 {info.get('title')} | آخر حلقة: {info.get('last_ep')} ({info.get('last_date')}) | {state}")
-        else:
-            lines.append(f"🎬 {info.get('title')} | آخر حلقة: {info.get('last_ep')} | {state}")
-    bot.reply_to(message, "\n".join(lines))
+    if not admin_only(message): return
+    bot.reply_to(message, status_message(), parse_mode="HTML")
 
 @bot.message_handler(commands=["del"])
 def delete_item(message):
+    if not admin_only(message): return
     data = load_series_data()
-    if not data: return bot.reply_to(message, "القائمة فارغة.")
     markup = InlineKeyboardMarkup(row_width=1)
-    for slug, info in data.items(): markup.add(InlineKeyboardButton(text=f"❌ {info.get('title')}", callback_data=f"del_{slug}"))
-    bot.reply_to(message, "اختر للحذف:", reply_markup=markup)
+    for slug, info in data.items():
+        markup.add(InlineKeyboardButton(text=f"❌ حذف: {info.get('title', slug)}", callback_data=f"del_{slug}"))
+    if not data: return bot.reply_to(message, "📭 القائمة فارغة.")
+    bot.reply_to(message, "🗑 <b>اختر للحذف:</b>", reply_markup=markup, parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('del_'))
-def process_delete(call):
+def process_delete_callback(call):
     slug = call.data.split('del_')[1]
     data = load_series_data()
     if slug in data:
         del data[slug]
         save_series_data(data)
-        bot.edit_message_text("✅ تم الحذف بنجاح.", call.message.chat.id, call.message.message_id)
+        bot.answer_callback_query(call.id, "تم الحذف بنجاح! ✅")
+        bot.edit_message_text("✅ تم الحذف من القائمة.", call.message.chat.id, call.message.message_id)
 
-@bot.message_handler(commands=["testapi"])
-def test_api(message):
-    try:
-        slug = message.text.split()[1]
-        res = send_to_site(999, f"Test-{slug}", 999, "360|https://test.mp4")
-        bot.reply_to(message, f"نتيجة الاختبار:\n{res}")
-    except: bot.reply_to(message, "❌ اكتب /testapi واسم للتجربة")
+@bot.message_handler(commands=["check", "status"])
+def status(message):
+    if admin_only(message): bot.reply_to(message, status_message(), parse_mode="HTML")
+
+@bot.message_handler(commands=["scan"])
+def force_check(message):
+    if not admin_only(message): return
+    if not scan_lock.acquire(blocking=False): return bot.reply_to(message, "⏳ يوجد فحص جارٍ...")
+    scan_lock.release()
+    bot.reply_to(message, "🔎 <b>بدأ الفحص اليدوي...</b>", parse_mode="HTML")
+    threading.Thread(target=lambda: bot.send_message(ADMIN_CHAT_ID, "✅ <b>انتهى الفحص!</b>\n\n" + ("\n".join(scan_all_series_once()) or "📭 فارغ."), parse_mode="HTML"), daemon=True).start()
 
 if __name__ == "__main__":
     threading.Thread(target=auto_checker_loop, daemon=True).start()
-    print("Bot is running with Smart Quality Tracking...", flush=True)
+    print("Bot is running with Progressive Quality Tracking...", flush=True)
     bot.infinity_polling()
