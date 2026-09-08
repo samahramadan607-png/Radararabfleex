@@ -58,7 +58,7 @@ def get_infinity_session(url):
                 parsed_url = urlparse(url)
                 session.cookies.set('__test', cookie_val, domain=parsed_url.netloc, path='/')
     except Exception as e:
-        print(f"[ERROR] Infinity Session: {e}", flush=True)
+        pass
     return session
 
 def load_series_data():
@@ -156,7 +156,7 @@ def scan_item(slug, info):
     current_track_id = info.get("track_id")
     state_changed = False
 
-    # 1. أول مرة نلاقي الحلقة
+    # 1. اكتشاف مبدئي (لأول مرة نلاقي الحلقة)
     if current_track_id != target_id:
         api_status = send_to_site(series_id, display_title, target_ep, links_string) if series_id else "No ID"
         msg = f"🎬 <b>اكتشاف مبدئي:</b> {info.get('title', slug)}\n📺 <b>{display_title}</b>\n📶 <b>الجودات:</b> {len(links)}/4 ({', '.join(found_keys)})\n🌐 <b>الموقع:</b> {api_status}"
@@ -172,7 +172,7 @@ def scan_item(slug, info):
             info["track_qualities"] = found_keys
         state_changed = True
 
-    # 2. إحنا بنتابع الحلقة دي أصلاً
+    # 2. إحنا بنتابع الحلقة دي ومستنيين جودات زيادة
     else:
         tracked_qualities = info.get("track_qualities", [])
         new_qualities = [q for q in found_keys if q not in tracked_qualities]
@@ -184,7 +184,7 @@ def scan_item(slug, info):
             info["track_qualities"] = found_keys
             state_changed = True
             
-        # فحص الإغلاق (الوقت أو اكتمال الجودات)
+        # فحص الإغلاق (6 ساعات أو اكتمال الجودات)
         time_elapsed = time.time() - info.get("track_start", 0)
         if len(links) >= 4 or time_elapsed > (MAX_WAIT_HOURS * 3600):
             info["last_ep"] = target_ep
@@ -220,11 +220,11 @@ def auto_checker_loop():
         time.sleep(CHECK_INTERVAL_SECONDS)
 
 # ===============================
-# أوامر البوت (إضافة، نسخ احتياطي، إلخ)
+# أوامر البوت
 # ===============================
 @bot.message_handler(commands=["start", "help"])
 def welcome(message):
-    bot.reply_to(message, "🤖 النظام الشامل (مسلسلات ومصارعة وتحديث جودات)\n/add | /del | /list | /backup | /restore | /setep | /setdate | /testapi")
+    bot.reply_to(message, "🤖 النظام الشامل الذكي (إضافة + تحديث جودات)\n/add | /del | /list | /backup | /restore | /setep | /setdate | /testapi")
 
 @bot.message_handler(commands=["backup"])
 def backup_data(message):
@@ -234,17 +234,26 @@ def backup_data(message):
 
 @bot.message_handler(commands=["restore"])
 def restore_data_step(message):
-    msg = bot.reply_to(message, "📥 أرسل ملف series.json كـ Document:")
+    msg = bot.reply_to(message, "📥 انسخ محتوى الملف (النص) وابعته هنا في رسالة، أو ارفع الملف كـ Document:")
     bot.register_next_step_handler(msg, process_restore)
 
 def process_restore(message):
     try:
-        file_info = bot.get_file(message.document.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        json.loads(downloaded_file.decode('utf-8'))
-        with open(DATA_FILE, 'wb') as new_file: new_file.write(downloaded_file)
-        bot.reply_to(message, "✅ تم استعادة البيانات بنجاح!")
-    except: bot.reply_to(message, "❌ خطأ في الملف.")
+        # فحص هل المستخدم بعت ملف ولا نص عادي
+        if message.document:
+            file_info = bot.get_file(message.document.file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            raw_data = downloaded_file.decode('utf-8', errors='ignore')
+        elif message.text:
+            raw_data = message.text
+        else:
+            return bot.reply_to(message, "❌ لازم تبعت النص أو الملف.")
+
+        parsed_data = json.loads(raw_data)
+        save_series_data(parsed_data)
+        bot.reply_to(message, "✅ تم استعادة البيانات بنجاح! تقدر تتأكد بأمر /list")
+    except Exception as e: 
+        bot.reply_to(message, f"❌ خطأ في قراءة البيانات: تأكد من نسخ الكود كاملاً.\n{str(e)}")
 
 @bot.message_handler(commands=["add"])
 def add_item_start(message):
@@ -258,25 +267,25 @@ def process_link_step(message):
         if "/wrestling/" in link.lower():
             slug = link.split('/')[5]
             date_str = re.search(r'-(\d{4}-\d{2}-\d{2})-', link).group(1)
-            msg = bot.reply_to(message, f"✅ مصارعة\nالمعرف: {slug}\nالتاريخ: {date_str}\n📝 أرسل اسم العرض:")
+            msg = bot.reply_to(message, f"✅ مصارعة\nالمعرف: {slug}\nالتاريخ: {date_str}\n📝 أرسل اسم العرض بالعربي:")
             bot.register_next_step_handler(msg, w_title_step, slug, date_str)
         else:
             parts = link.split('/')
             region, slug = parts[4], parts[5]
             match = re.search(r'-S(\d+)-EP(\d+)', link, re.IGNORECASE)
             season, episode = int(match.group(1)), int(match.group(2))
-            msg = bot.reply_to(message, f"✅ مسلسل\nالمعرف: {slug}\nالموسم: {season}\nالحلقة: {episode}\n📝 أرسل اسم المسلسل:")
+            msg = bot.reply_to(message, f"✅ مسلسل\nالمعرف: {slug}\nالموسم: {season}\nالحلقة: {episode}\n📝 أرسل اسم المسلسل بالعربي:")
             bot.register_next_step_handler(msg, s_title_step, slug, region, season, episode)
     except: bot.reply_to(message, "❌ خطأ في قراءة الرابط.")
 
 def w_title_step(m, slug, date_str):
     title = m.text.strip()
-    msg = bot.reply_to(m, "🔢 أرسل الـ ID (رقم):")
+    msg = bot.reply_to(m, "🔢 أرسل الـ ID في موقعك (رقم):")
     bot.register_next_step_handler(msg, w_id_step, slug, date_str, title)
 
 def w_id_step(m, slug, date_str, title):
     series_id = int(m.text.strip())
-    msg = bot.reply_to(m, "🔢 أرسل رقم الحلقة الحالي للعرض (عشان نزود عليه):")
+    msg = bot.reply_to(m, "🔢 أرسل رقم الحلقة الحالي للعرض في موقعك (الرقم اللي هنزود عليه):")
     bot.register_next_step_handler(msg, w_save_step, slug, date_str, title, series_id)
 
 def w_save_step(m, slug, date_str, title, series_id):
@@ -284,11 +293,11 @@ def w_save_step(m, slug, date_str, title, series_id):
     data = load_series_data()
     data[slug] = {"type": "wrestling", "title": title, "last_date": date_str, "last_ep": last_ep, "series_id": series_id}
     save_series_data(data)
-    bot.reply_to(m, "✅ تمت إضافة المصارعة بنجاح!")
+    bot.reply_to(m, "✅ تمت إضافة المصارعة بنجاح! سيتم البحث عن العرض القادم.")
 
 def s_title_step(m, slug, region, season, episode):
     title = m.text.strip()
-    msg = bot.reply_to(m, "🔢 أرسل الـ ID (رقم):")
+    msg = bot.reply_to(m, "🔢 أرسل الـ ID في موقعك (رقم):")
     bot.register_next_step_handler(msg, s_save_step, slug, region, season, episode, title)
 
 def s_save_step(m, slug, region, season, episode, title):
@@ -305,10 +314,10 @@ def set_episode(message):
         data = load_series_data()
         if slug in data:
             data[slug]["last_ep"] = int(episode)
-            data[slug].pop("track_id", None) # تصفير التتبع
+            data[slug].pop("track_id", None)
             save_series_data(data)
-            bot.reply_to(message, f"✅ تم تعديل الحلقة إلى: {episode}")
-    except: bot.reply_to(message, "❌ /setep slug number")
+            bot.reply_to(message, f"✅ تم تعديل الحلقة السابقة إلى: {episode}. سيبحث عن: {int(episode)+1}")
+    except: bot.reply_to(message, "❌ الاستخدام الصحيح: /setep slug number")
 
 @bot.message_handler(commands=["setdate"])
 def set_date(message):
@@ -318,25 +327,26 @@ def set_date(message):
         if slug in data and data[slug].get("type") == "wrestling":
             data[slug]["last_date"] = new_date
             save_series_data(data)
-            bot.reply_to(message, f"✅ تم تعديل التاريخ إلى: {new_date}")
+            bot.reply_to(message, f"✅ تم تعديل تاريخ آخر عرض إلى: {new_date}")
     except: pass
 
 @bot.message_handler(commands=["list"])
 def list_items(message):
     data = load_series_data()
     if not data: return bot.reply_to(message, "📭 القائمة فارغة.")
-    lines = ["📺 القائمة:"]
+    lines = ["📺 القائمة الحالية:"]
     for slug, info in data.items():
-        state = "⏳ يراقب الجودات" if "track_id" in info else "✅ مكتمل"
+        state = "⏳ يجمع جودات" if "track_id" in info else "✅ مكتمل"
         if info.get("type") == "wrestling":
-            lines.append(f"🥊 {info.get('title')} (ح{info.get('last_ep')}) | العرض: {info.get('last_date')} | {state}")
+            lines.append(f"🥊 {info.get('title')} | آخر حلقة: {info.get('last_ep')} ({info.get('last_date')}) | {state}")
         else:
-            lines.append(f"🎬 {info.get('title')} | حلقة: {info.get('last_ep')} | {state}")
+            lines.append(f"🎬 {info.get('title')} | آخر حلقة: {info.get('last_ep')} | {state}")
     bot.reply_to(message, "\n".join(lines))
 
 @bot.message_handler(commands=["del"])
 def delete_item(message):
     data = load_series_data()
+    if not data: return bot.reply_to(message, "القائمة فارغة.")
     markup = InlineKeyboardMarkup(row_width=1)
     for slug, info in data.items(): markup.add(InlineKeyboardButton(text=f"❌ {info.get('title')}", callback_data=f"del_{slug}"))
     bot.reply_to(message, "اختر للحذف:", reply_markup=markup)
@@ -348,15 +358,15 @@ def process_delete(call):
     if slug in data:
         del data[slug]
         save_series_data(data)
-        bot.edit_message_text("✅ تم الحذف.", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text("✅ تم الحذف بنجاح.", call.message.chat.id, call.message.message_id)
 
 @bot.message_handler(commands=["testapi"])
 def test_api(message):
     try:
         slug = message.text.split()[1]
-        res = send_to_site(999, f"Test-{slug}", 999, "360p|https://test.mp4")
-        bot.reply_to(message, f"نتجية الاختبار:\n{res}")
-    except: bot.reply_to(message, "اكتب /testapi واسم لتجربته")
+        res = send_to_site(999, f"Test-{slug}", 999, "360|https://test.mp4")
+        bot.reply_to(message, f"نتيجة الاختبار:\n{res}")
+    except: bot.reply_to(message, "❌ اكتب /testapi واسم للتجربة")
 
 if __name__ == "__main__":
     threading.Thread(target=auto_checker_loop, daemon=True).start()
