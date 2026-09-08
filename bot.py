@@ -128,20 +128,28 @@ def scan_item(slug, info):
     item_type = info.get("type", "series")
     links = {}
 
+    # تحديد الحلقة القادمة أو العرض القادم
     if item_type == "wrestling":
         last_date_str = info.get("last_date", "2026-01-01")
         target_ep = int(info.get("last_ep", 0)) + 1
         date_obj = datetime.strptime(last_date_str, "%Y-%m-%d")
         next_date_str = (date_obj + timedelta(days=7)).strftime("%Y-%m-%d")
-        for q, url in candidate_urls_wrestling(slug, next_date_str):
+        
+        # إذا كان يتم تتبع هذا العرض حالياً، نستخدم نفس التاريخ المستهدف، وإلا نبحث في التاريخ الجديد
+        current_track_id = info.get("track_id")
+        target_date_to_scan = next_date_str if current_track_id is None else current_track_id.split('_')[1]
+        
+        for q, url in candidate_urls_wrestling(slug, target_date_to_scan):
             if q not in links and check_link(url): links[q] = url
-        display_title = next_date_str.replace("-", ".")
-        target_id = f"{target_ep}_{next_date_str}"
+            
+        display_title = target_date_to_scan.replace("-", ".")
+        target_id = f"{target_ep}_{target_date_to_scan}"
     else:
         target_ep = int(info.get("last_ep", 0)) + 1
         season = int(info.get("season", 1))
         for q, url in candidate_urls_series(slug, season, target_ep, str(info.get("region", "EG")).upper()):
             if q not in links and check_link(url): links[q] = url
+            
         display_title = f"الحلقة {target_ep}"
         target_id = str(target_ep)
         next_date_str = None
@@ -162,11 +170,13 @@ def scan_item(slug, info):
         msg = f"🎬 <b>اكتشاف مبدئي:</b> {info.get('title', slug)}\n📺 <b>{display_title}</b>\n📶 <b>الجودات:</b> {len(links)}/4 ({', '.join(found_keys)})\n🌐 <b>الموقع:</b> {api_status}"
         bot.send_message(ADMIN_CHAT_ID, msg, parse_mode="HTML")
         
+        # لو نزلت الـ 4 جودات مرة واحدة، نقفلها ونستعد للي بعدها
         if len(links) >= 4:
             info["last_ep"] = target_ep
             if item_type == "wrestling": info["last_date"] = next_date_str
             info.pop("track_id", None); info.pop("track_start", None); info.pop("track_qualities", None)
         else:
+            # لو أقل من 4، نحفظها عشان نكمل عليها
             info["track_id"] = target_id
             info["track_start"] = time.time()
             info["track_qualities"] = found_keys
@@ -177,6 +187,7 @@ def scan_item(slug, info):
         tracked_qualities = info.get("track_qualities", [])
         new_qualities = [q for q in found_keys if q not in tracked_qualities]
         
+        # لو لقينا جودات جديدة (مثلاً الـ 720 نزلت)
         if new_qualities:
             api_status = send_to_site(series_id, display_title, target_ep, links_string) if series_id else "No ID"
             msg = f"🔄 <b>تحديث جودات:</b> {info.get('title', slug)}\n📺 <b>{display_title}</b>\n🆕 <b>تم إضافة:</b> {', '.join(new_qualities)}\n🌐 <b>الموقع:</b> {api_status}"
@@ -184,11 +195,11 @@ def scan_item(slug, info):
             info["track_qualities"] = found_keys
             state_changed = True
             
-        # فحص الإغلاق (6 ساعات أو اكتمال الجودات)
+        # فحص الإغلاق (6 ساعات أو اكتمال الـ 4 جودات)
         time_elapsed = time.time() - info.get("track_start", 0)
         if len(links) >= 4 or time_elapsed > (MAX_WAIT_HOURS * 3600):
             info["last_ep"] = target_ep
-            if item_type == "wrestling": info["last_date"] = next_date_str
+            if item_type == "wrestling": info["last_date"] = target_id.split('_')[1]
             info.pop("track_id", None); info.pop("track_start", None); info.pop("track_qualities", None)
             state_changed = True
 
@@ -224,7 +235,27 @@ def auto_checker_loop():
 # ===============================
 @bot.message_handler(commands=["start", "help"])
 def welcome(message):
-    bot.reply_to(message, "🤖 النظام الشامل الذكي (إضافة + تحديث جودات)\n/add | /del | /list | /backup | /restore | /setep | /setdate | /testapi")
+    bot.reply_to(message, "🤖 النظام الشامل الذكي (إضافة + تحديث جودات)\n/add | /del | /list | /status | /backup | /restore | /setep | /setdate | /testapi")
+
+@bot.message_handler(commands=["status"])
+def bot_status(message):
+    global started_at, last_scan_at, scan_cycles, total_added
+    
+    uptime = datetime.now(timezone.utc) - started_at
+    hours, remainder = divmod(uptime.seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    uptime_str = f"{uptime.days} أيام, {hours} ساعات, {minutes} دقائق"
+    
+    last_scan_str = last_scan_at.strftime("%Y-%m-%d %H:%M:%S UTC") if last_scan_at else "لم يبدأ بعد"
+    
+    msg = (
+        f"🤖 <b>إحصائيات البوت:</b>\n\n"
+        f"⏱️ <b>مدة التشغيل:</b> {uptime_str}\n"
+        f"🔄 <b>دورات الفحص:</b> {scan_cycles}\n"
+        f"✅ <b>الإضافات والتحديثات:</b> {total_added}\n"
+        f"🕒 <b>آخر فحص تم:</b> {last_scan_str}\n"
+    )
+    bot.reply_to(message, msg, parse_mode="HTML")
 
 @bot.message_handler(commands=["backup"])
 def backup_data(message):
@@ -234,12 +265,11 @@ def backup_data(message):
 
 @bot.message_handler(commands=["restore"])
 def restore_data_step(message):
-    msg = bot.reply_to(message, "📥 انسخ محتوى الملف (النص) وابعته هنا في رسالة، أو ارفع الملف كـ Document:")
+    msg = bot.reply_to(message, "📥 انسخ كود الـ JSON بالكامل والصقه هنا في رسالة عادية، أو ارفع الملف:")
     bot.register_next_step_handler(msg, process_restore)
 
 def process_restore(message):
     try:
-        # فحص هل المستخدم بعت ملف ولا نص عادي
         if message.document:
             file_info = bot.get_file(message.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
@@ -251,9 +281,9 @@ def process_restore(message):
 
         parsed_data = json.loads(raw_data)
         save_series_data(parsed_data)
-        bot.reply_to(message, "✅ تم استعادة البيانات بنجاح! تقدر تتأكد بأمر /list")
+        bot.reply_to(message, "✅ تم استعادة البيانات بنجاح! راجع أمر /list")
     except Exception as e: 
-        bot.reply_to(message, f"❌ خطأ في قراءة البيانات: تأكد من نسخ الكود كاملاً.\n{str(e)}")
+        bot.reply_to(message, f"❌ خطأ: تأكد من نسخ الكود كاملاً.\n{str(e)}")
 
 @bot.message_handler(commands=["add"])
 def add_item_start(message):
@@ -326,6 +356,7 @@ def set_date(message):
         data = load_series_data()
         if slug in data and data[slug].get("type") == "wrestling":
             data[slug]["last_date"] = new_date
+            data[slug].pop("track_id", None)
             save_series_data(data)
             bot.reply_to(message, f"✅ تم تعديل تاريخ آخر عرض إلى: {new_date}")
     except: pass
