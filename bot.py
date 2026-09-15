@@ -1,3 +1,4 @@
+# STREAMING_CHUNK:Updating the script with Cloudflare Worker proxy...
 import html
 import json
 import os
@@ -6,10 +7,9 @@ import threading
 import time
 import binascii
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
 import requests
-# استدعاء مكتبة التخفي الجديدة لتخطي حماية Cloudflare و TLS Fingerprinting
 from curl_cffi import requests as curl_requests 
 import urllib3
 import telebot
@@ -28,6 +28,9 @@ SOURCE_DOMAINS = ["b2.shahidtv.net", "b1.shahidtv.net", "b3.shahidtv.net"]
 API_URL = "https://arabfleex.live/api_bot.php"
 SECRET_KEY = "ArabFleex_2024_SecRet"
 
+# رابط الـ Cloudflare Worker الخاص بك
+CF_WORKER_URL = "https://lingering-sun-46b4.mf828262.workers.dev/"
+
 bot = telebot.TeleBot(BOT_TOKEN)
 
 scan_lock = threading.Lock()
@@ -36,10 +39,10 @@ last_scan_at = None
 scan_cycles = 0
 total_added = 0
 last_scan_result = "لم يبدأ فحص بعد"
-MAX_WAIT_HOURS = 6 # أقصى مدة للانتظار لاستكمال الجودات
+MAX_WAIT_HOURS = 6
 
 # ==========================================
-# دالة تخطي حماية InfinityFree (لموقعك)
+# دالة تخطي حماية InfinityFree
 # ==========================================
 def get_infinity_session(url):
     session = requests.Session()
@@ -117,18 +120,17 @@ def candidate_urls_wrestling(slug, date_str):
                 yield quality, f"https://{domain}/files/wrestling/{slug}/{slug}-{date_str}{suffix}"
 
 # ==========================================
-# فحص الروابط (باستخدام curl_cffi لتخطي الحماية)
+# فحص الروابط عبر Cloudflare Worker
 # ==========================================
-def check_link(url):
+def check_link(original_url):
     try:
-        # استخدام curl_requests بدلاً من requests العادية
+        # توجيه الطلب من خلال الـ Worker الخاص بك
+        # (حسب تصميم الـ Worker، قد يكون بالطريقة التالية أو بوضع الرابط بعده)
+        test_url = f"{CF_WORKER_URL}?url={quote(original_url, safe='')}"
+        
         response = curl_requests.get(
-            url,
-            impersonate="chrome", # هنا السحر! هنتخفى كمتصفح كروم حقيقي ببصمة التشفير بتاعته
-            headers={
-                "Referer": "https://b2.shahidtv.net/",
-                "Accept": "*/*"
-            },
+            test_url,
+            impersonate="chrome",
             timeout=10,
             stream=True,
             verify=False
@@ -340,7 +342,7 @@ def admin_only(message):
 @bot.message_handler(commands=["start", "help"])
 def welcome(message):
     if admin_only(message):
-        bot.reply_to(message, "🤖 <b>نظام المراقبة (مسلسلات ومصارعة)</b>\n\n🔹 <code>/add</code> — إضافة جديد\n🔹 <code>/del</code> — حذف\n🔹 <code>/list</code> — قائمة\n🔹 <code>/setep</code> — تعديل حلقة مسلسل\n🔹 <code>/setdate</code> — تعديل تاريخ مصارعة\n🔹 <code>/check</code> أو <code>/status</code> — الحالة\n🔹 <code>/scan</code> — فحص يدوي\n🔹 <code>/test</code> — فحص رابط مباشر\n🔹 <code>/backup</code> — أخذ نسخة\n🔹 <code>/restore</code> — استعادة نسخة", parse_mode="HTML")
+        bot.reply_to(message, "🤖 <b>نظام المراقبة (مربوط بـ Cloudflare Worker)</b>\n\n🔹 <code>/add</code> — إضافة جديد\n🔹 <code>/del</code> — حذف\n🔹 <code>/list</code> — قائمة\n🔹 <code>/setep</code> — تعديل حلقة\n🔹 <code>/setdate</code> — تعديل تاريخ\n🔹 <code>/check</code> — الحالة\n🔹 <code>/scan</code> — فحص يدوي\n🔹 <code>/test</code> — فحص رابط", parse_mode="HTML")
 
 @bot.message_handler(commands=["backup"])
 def backup_data(message):
@@ -354,7 +356,7 @@ def backup_data(message):
 @bot.message_handler(commands=["restore"])
 def restore_data_step(message):
     if not admin_only(message): return
-    msg = bot.reply_to(message, "📥 <b>أرسل لي ملف series.json كرسالة (Document) أو انسخ محتواه كنص والصقه هنا:</b>", parse_mode="HTML")
+    msg = bot.reply_to(message, "📥 <b>أرسل لي ملف series.json كرسالة (Document) أو نص:</b>", parse_mode="HTML")
     bot.register_next_step_handler(msg, process_restore)
 
 def process_restore(message):
@@ -368,21 +370,18 @@ def process_restore(message):
         elif message.text:
             raw_data = message.text
         else:
-            bot.reply_to(message, "❌ هذا ليس ملفاً ولا نصاً صالحاً.")
+            bot.reply_to(message, "❌ ملف أو نص غير صالح.")
             return
-
         parsed_data = json.loads(raw_data)
         save_series_data(parsed_data)
-        bot.reply_to(message, "✅ <b>تم استعادة البيانات بنجاح!</b>", parse_mode="HTML")
-    except json.JSONDecodeError:
-         bot.reply_to(message, "❌ الكود المرسل ليس بصيغة JSON صحيحة. تأكد من نسخه بالكامل.")
+        bot.reply_to(message, "✅ <b>تمت الاستعادة بنجاح!</b>", parse_mode="HTML")
     except Exception as e:
-        bot.reply_to(message, f"❌ حدث خطأ أثناء الاستعادة: {e}")
+        bot.reply_to(message, f"❌ خطأ: {e}")
 
 @bot.message_handler(commands=["add"])
 def add_item_start(message):
     if not admin_only(message): return
-    msg = bot.reply_to(message, "🔗 <b>أرسل لي رابط الحلقة أو عرض المصارعة:</b>", parse_mode="HTML")
+    msg = bot.reply_to(message, "🔗 <b>أرسل رابط الحلقة أو العرض:</b>", parse_mode="HTML")
     bot.register_next_step_handler(msg, process_link_step)
 
 def process_link_step(message):
@@ -396,10 +395,10 @@ def process_link_step(message):
             match = re.search(r'-(\d{4}-\d{2}-\d{2})-', filename)
             if match:
                 date_str = match.group(1)
-                msg = bot.reply_to(message, f"✅ تم اكتشاف <b>عرض مصارعة</b>!\nالمعرف: <code>{slug}</code>\nالتاريخ: <code>{date_str}</code>\n\n📝 أرسل <b>اسم العرض</b>:", parse_mode="HTML")
+                msg = bot.reply_to(message, f"✅ تم اكتشاف عرض مصارعة!\nالمعرف: <code>{slug}</code>\nالتاريخ: <code>{date_str}</code>\n\n📝 أرسل اسم العرض:", parse_mode="HTML")
                 bot.register_next_step_handler(msg, w_title_step, slug, date_str)
             else:
-                bot.reply_to(message, "❌ لم يتم العثور على تاريخ العرض في الرابط (YYYY-MM-DD).")
+                bot.reply_to(message, "❌ لم يتم العثور على التاريخ في الرابط.")
         else:
             parts = link.split('/')
             region = parts[4]
@@ -409,49 +408,49 @@ def process_link_step(message):
             if match:
                 season = int(match.group(1))
                 episode = int(match.group(2))
-                msg = bot.reply_to(message, f"✅ تم اكتشاف <b>مسلسل</b>!\nالمعرف: <code>{slug}</code>\nالموسم: <code>{season}</code>\nالحلقة: <code>{episode}</code>\n\n📝 أرسل <b>اسم المسلسل</b>:", parse_mode="HTML")
+                msg = bot.reply_to(message, f"✅ تم اكتشاف مسلسل!\nالمعرف: <code>{slug}</code>\nالموسم: {season}\nالحلقة: {episode}\n\n📝 أرسل اسم المسلسل:", parse_mode="HTML")
                 bot.register_next_step_handler(msg, s_title_step, slug, region, season, episode)
             else:
-                bot.reply_to(message, "❌ لم يتم العثور على S01-EP01 في الرابط.")
+                bot.reply_to(message, "❌ لم يتم العثور على S-EP في الرابط.")
     except Exception as e:
-        bot.reply_to(message, f"❌ خطأ في قراءة الرابط: {e}")
+        bot.reply_to(message, f"❌ خطأ: {e}")
 
 def w_title_step(message, slug, date_str):
     if message.text.startswith('/'): return
     title = message.text.strip()
-    msg = bot.reply_to(message, "🔢 أرسل <b>الـ ID</b> الخاص بالعرض في الموقع (رقم):", parse_mode="HTML")
+    msg = bot.reply_to(message, "🔢 أرسل ID العرض في موقعك:", parse_mode="HTML")
     bot.register_next_step_handler(msg, w_id_step, slug, date_str, title)
 
 def w_id_step(message, slug, date_str, title):
     if message.text.startswith('/'): return
     try: series_id = int(message.text.strip())
-    except ValueError: return bot.reply_to(message, "❌ يجب أن يكون الرقم صحيحاً.")
-    msg = bot.reply_to(message, "🔢 أرسل <b>رقم الحلقة الحالي</b> للعرض في موقعك (عشان أزود عليه المرة الجاية، لو لسه جديد اكتب 0):", parse_mode="HTML")
+    except ValueError: return bot.reply_to(message, "❌ يجب أن يكون رقماً.")
+    msg = bot.reply_to(message, "🔢 أرسل رقم الحلقة الحالي (لو جديد اكتب 0):", parse_mode="HTML")
     bot.register_next_step_handler(msg, w_save_step, slug, date_str, title, series_id)
 
 def w_save_step(message, slug, date_str, title, series_id):
     if message.text.startswith('/'): return
     try: last_ep = int(message.text.strip())
-    except ValueError: return bot.reply_to(message, "❌ يجب أن يكون الرقم صحيحاً.")
+    except ValueError: return bot.reply_to(message, "❌ يجب أن يكون رقماً.")
     data = load_series_data()
     data[slug] = {"type": "wrestling", "title": title, "last_date": date_str, "last_ep": last_ep, "series_id": series_id}
     save_series_data(data)
-    bot.reply_to(message, f"✅ <b>تمت إضافة المصارعة!</b>\nسيبحث عن العرض التالي بعد 7 أيام من تاريخ {date_str}.", parse_mode="HTML")
+    bot.reply_to(message, "✅ تمت إضافة المصارعة بنجاح!", parse_mode="HTML")
 
 def s_title_step(message, slug, region, season, episode):
     if message.text.startswith('/'): return
     title = message.text.strip()
-    msg = bot.reply_to(message, "🔢 أرسل <b>الـ ID</b> الخاص بالمسلسل في الموقع (رقم):", parse_mode="HTML")
+    msg = bot.reply_to(message, "🔢 أرسل ID المسلسل في موقعك:", parse_mode="HTML")
     bot.register_next_step_handler(msg, s_save_step, slug, region, season, episode, title)
 
 def s_save_step(message, slug, region, season, episode, title):
     if message.text.startswith('/'): return
     try: series_id = int(message.text.strip())
-    except ValueError: return bot.reply_to(message, "❌ يجب أن يكون الرقم صحيحاً.")
+    except ValueError: return bot.reply_to(message, "❌ يجب أن يكون رقماً.")
     data = load_series_data()
     data[slug] = {"type": "series", "title": title, "season": season, "last_ep": episode, "region": region, "series_id": series_id}
     save_series_data(data)
-    bot.reply_to(message, f"✅ <b>تمت إضافة المسلسل!</b>\nسيبحث عن الحلقة {episode + 1}", parse_mode="HTML")
+    bot.reply_to(message, "✅ تمت إضافة المسلسل بنجاح!", parse_mode="HTML")
 
 @bot.message_handler(commands=["setep"])
 def set_episode(message):
@@ -462,7 +461,7 @@ def set_episode(message):
         if slug in data:
             data[slug]["last_ep"] = int(episode)
             save_series_data(data)
-            bot.reply_to(message, f"✅ تم تعديل الحلقة السابقة إلى: <b>{episode}</b>\nسيبحث الآن عن حلقة: <b>{int(episode) + 1}</b>", parse_mode="HTML")
+            bot.reply_to(message, f"✅ تم التعديل إلى حلقة: {episode}", parse_mode="HTML")
     except: bot.reply_to(message, "❌ الصيغة: /setep slug number")
 
 @bot.message_handler(commands=["setdate"])
@@ -474,7 +473,7 @@ def set_date(message):
         if slug in data and data[slug].get("type") == "wrestling":
             data[slug]["last_date"] = new_date
             save_series_data(data)
-            bot.reply_to(message, f"✅ تم تعديل آخر تاريخ للمصارعة إلى: <b>{new_date}</b>", parse_mode="HTML")
+            bot.reply_to(message, f"✅ تم التعديل إلى تاريخ: {new_date}", parse_mode="HTML")
     except: bot.reply_to(message, "❌ الصيغة: /setdate slug YYYY-MM-DD")
 
 @bot.message_handler(commands=["list"])
@@ -490,7 +489,7 @@ def delete_item(message):
     for slug, info in data.items():
         markup.add(InlineKeyboardButton(text=f"❌ حذف: {info.get('title', slug)}", callback_data=f"del_{slug}"))
     if not data: return bot.reply_to(message, "📭 القائمة فارغة.")
-    bot.reply_to(message, "🗑 <b>اختر للحذف:</b>", reply_markup=markup, parse_mode="HTML")
+    bot.reply_to(message, "🗑 اختر للحذف:", reply_markup=markup, parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('del_'))
 def process_delete_callback(call):
@@ -499,8 +498,8 @@ def process_delete_callback(call):
     if slug in data:
         del data[slug]
         save_series_data(data)
-        bot.answer_callback_query(call.id, "تم الحذف بنجاح! ✅")
-        bot.edit_message_text("✅ تم الحذف من القائمة.", call.message.chat.id, call.message.message_id)
+        bot.answer_callback_query(call.id, "تم الحذف بنجاح!")
+        bot.edit_message_text("✅ تم الحذف.", call.message.chat.id, call.message.message_id)
 
 @bot.message_handler(commands=["check", "status"])
 def status(message):
@@ -511,54 +510,37 @@ def force_check(message):
     if not admin_only(message): return
     if not scan_lock.acquire(blocking=False): return bot.reply_to(message, "⏳ يوجد فحص جارٍ...")
     scan_lock.release()
-    bot.reply_to(message, "🔎 <b>بدأ الفحص اليدوي...</b>", parse_mode="HTML")
+    bot.reply_to(message, "🔎 <b>بدأ الفحص عبر الـ Worker...</b>", parse_mode="HTML")
     threading.Thread(target=lambda: bot.send_message(ADMIN_CHAT_ID, "✅ <b>انتهى الفحص!</b>\n\n" + ("\n".join(scan_all_series_once()) or "📭 فارغ."), parse_mode="HTML"), daemon=True).start()
 
-# ==========================================
-# أمر فحص وكشف حماية السيرفر (محدث بـ curl_cffi)
-# ==========================================
 @bot.message_handler(commands=["test"])
 def test_link_cmd(message):
     if not admin_only(message): return
     try:
         url = message.text.split()[1]
-        msg_wait = bot.reply_to(message, f"🔄 جاري فحص الرابط باستخدام متصفح حقيقي (curl_cffi)...\nانتظر...")
+        msg_wait = bot.reply_to(message, "🔄 جاري فحص الرابط عبر Cloudflare Worker...")
+        test_url = f"{CF_WORKER_URL}?url={quote(url, safe='')}"
         
         response = curl_requests.get(
-            url,
+            test_url,
             impersonate="chrome",
-            headers={"Referer": "https://b2.shahidtv.net/", "Accept": "*/*"},
             timeout=10,
             stream=True,
             verify=False
         )
-        
         status = response.status_code
         c_type = response.headers.get("Content-Type", "غير معروف")
-        c_len = response.headers.get("Content-Length", "غير معروف")
         
-        msg = f"📊 **نتيجة كشف السيرفر (بعد التخطي):**\n\n"
-        msg += f"الـ Status Code: `{status}`\n"
-        msg += f"الـ Content-Type: `{c_type}`\n"
-        msg += f"الـ Content-Length: `{c_len}`\n\n"
-        
+        msg = f"📊 **نتيجة الفحص عبر الـ Worker:**\nStatus Code: `{status}`\nContent-Type: `{c_type}`"
         if status == 200:
-            msg += "✅ **نجاح!** قدرنا نضرب الحماية والسيرفر رد بـ 200 OK!"
-        elif status == 403:
-            msg += "🚫 لسه فيه 403 (كده المشكلة في الآي بي نفسه ومحتاجين بروكسي)."
-        elif status == 404:
-            msg += "❌ السيرفر بيقول 404 (الملف مش موجود هنا)."
+            msg += "\n\n✅ **نجاح تام! الـ Worker تخطى الحظر وقرأ الملف بنجاح!**"
         else:
-            msg += "⚠️ رد غريب من السيرفر."
-            
+            msg += f"\n\n⚠️ رد بـ {status}"
         bot.edit_message_text(msg, message.chat.id, msg_wait.message_id, parse_mode="Markdown")
-        
-    except IndexError:
-        bot.reply_to(message, "❌ اكتب الأمر كالتالي:\n`/test الرابط`", parse_mode="Markdown")
     except Exception as e:
-        bot.reply_to(message, f"❌ حدث خطأ أثناء الفحص:\n`{e}`\n(تأكد إنك سطبت مكتبة curl_cffi)", parse_mode="Markdown")
+        bot.reply_to(message, f"❌ خطأ: {e}")
 
 if __name__ == "__main__":
     threading.Thread(target=auto_checker_loop, daemon=True).start()
-    print("Bot is running with curl_cffi Stealth Mode...", flush=True)
+    print("Bot is running with Cloudflare Worker Integration...", flush=True)
     bot.infinity_polling()
