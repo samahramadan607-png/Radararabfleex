@@ -1,3 +1,4 @@
 pyTelegramBotAPI
 requests
 pycryptodome
+curl_cffi
