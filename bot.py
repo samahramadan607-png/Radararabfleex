@@ -120,13 +120,13 @@ def candidate_urls_wrestling(slug, date_str):
                 yield quality, f"https://{domain}/files/wrestling/{slug}/{slug}-{date_str}{suffix}"
 
 # ==========================================
-# فحص الروابط (تم التعديل لتخطي الحظر)
+# فحص الروابط (معدل لتخطي الحظر)
 # ==========================================
 def check_link(url):
     try:
         response = requests.get(
             url,
-            headers={"User-Agent": APP_USER_AGENT}, # استخدام يوزر ايجنت التطبيق 1DM
+            headers={"User-Agent": APP_USER_AGENT},
             timeout=10,
             stream=True,
             verify=False
@@ -134,7 +134,6 @@ def check_link(url):
         content_type = response.headers.get("Content-Type", "").lower()
         content_length = response.headers.get("Content-Length")
         
-        # إضافة الصيغ الخاصة بالتحميل الإجباري
         valid_types = ["video/", "application/octet-stream", "application/force-download", "application/x-download"]
         has_video_type = not content_type or any(t in content_type for t in valid_types)
         
@@ -166,7 +165,6 @@ def scan_item(slug, info):
         next_date_str = next_date_obj.strftime("%Y-%m-%d")
         target_episode = last_ep + 1
         
-        # استخدام التاريخ المستهدف بناءً على ما إذا كنا نتبع عرضًا حاليًا أم نبحث عن جديد
         current_track_id = info.get("track_id")
         target_date_to_scan = next_date_str if current_track_id is None else current_track_id.split('_')[1]
         
@@ -179,7 +177,6 @@ def scan_item(slug, info):
         display_title = target_date_to_scan.replace("-", ".")
         target_id = f"{target_episode}_{target_date_to_scan}"
     else:
-        # مسلسلات
         target_episode = int(info.get("last_ep", 0)) + 1
         season = int(info.get("season", 1))
         
@@ -205,9 +202,6 @@ def scan_item(slug, info):
     
     current_track_id = info.get("track_id")
 
-    # ==========================================
-    # 1. اكتشاف مبدئي (الحلقة بتنزل لأول مرة)
-    # ==========================================
     if current_track_id != target_id:
         api_status = "لم يتم تحديد ID"
         if series_id:
@@ -232,21 +226,16 @@ def scan_item(slug, info):
         )
         bot.send_message(ADMIN_CHAT_ID, msg, parse_mode="HTML")
         
-        # إذا نزلت الـ 4 جودات فوراً، نغلق الحلقة
         if len(links) >= 4:
             info["last_ep"] = target_episode
             if item_type == "wrestling": info["last_date"] = target_date_to_scan
             info.pop("track_id", None); info.pop("track_start", None); info.pop("track_qualities", None)
         else:
-            # إذا لم تكتمل، نبدأ التتبع
             info["track_id"] = target_id
             info["track_start"] = time.time()
             info["track_qualities"] = found_keys
         state_changed = True
 
-    # ==========================================
-    # 2. حلقة تحت التتبع (نبحث عن جودات إضافية)
-    # ==========================================
     else:
         tracked_qualities = info.get("track_qualities", [])
         new_qualities = [q for q in found_keys if q not in tracked_qualities]
@@ -254,7 +243,6 @@ def scan_item(slug, info):
         if new_qualities:
             api_status = "لم يتم التحديث"
             if series_id:
-                # نرسل طلب UPDATE بدلاً من INSERT
                 payload = {
                     "secret_key": SECRET_KEY, "action": "update", "series_id": series_id,
                     "title": display_title, "episode_number": target_episode, "links_string": links_string
@@ -276,7 +264,6 @@ def scan_item(slug, info):
             info["track_qualities"] = found_keys
             state_changed = True
             
-        # فحص إغلاق الحلقة (إذا اكتملت 4 جودات أو انتهى الوقت)
         time_elapsed = time.time() - info.get("track_start", 0)
         if len(links) >= 4 or time_elapsed > (MAX_WAIT_HOURS * 3600):
             reason = "اكتمال الـ 4 جودات 🌟" if len(links) >= 4 else f"انتهاء مهلة الـ {MAX_WAIT_HOURS} ساعات ⏱"
@@ -351,11 +338,8 @@ def admin_only(message):
 @bot.message_handler(commands=["start", "help"])
 def welcome(message):
     if admin_only(message):
-        bot.reply_to(message, "🤖 <b>نظام المراقبة (مسلسلات ومصارعة)</b>\n\n🔹 <code>/add</code> — إضافة جديد\n🔹 <code>/del</code> — حذف\n🔹 <code>/list</code> — قائمة\n🔹 <code>/setep</code> — تعديل حلقة مسلسل\n🔹 <code>/setdate</code> — تعديل تاريخ مصارعة\n🔹 <code>/check</code> أو <code>/status</code> — الحالة\n🔹 <code>/scan</code> — فحص يدوي\n🔹 <code>/backup</code> — أخذ نسخة\n🔹 <code>/restore</code> — استعادة نسخة", parse_mode="HTML")
+        bot.reply_to(message, "🤖 <b>نظام المراقبة (مسلسلات ومصارعة)</b>\n\n🔹 <code>/add</code> — إضافة جديد\n🔹 <code>/del</code> — حذف\n🔹 <code>/list</code> — قائمة\n🔹 <code>/setep</code> — تعديل حلقة مسلسل\n🔹 <code>/setdate</code> — تعديل تاريخ مصارعة\n🔹 <code>/check</code> أو <code>/status</code> — الحالة\n🔹 <code>/scan</code> — فحص يدوي\n🔹 <code>/test</code> — فحص رابط مباشر\n🔹 <code>/backup</code> — أخذ نسخة\n🔹 <code>/restore</code> — استعادة نسخة", parse_mode="HTML")
 
-# ==========================================
-# النسخ الاحتياطي والاستعادة
-# ==========================================
 @bot.message_handler(commands=["backup"])
 def backup_data(message):
     if not admin_only(message): return
@@ -373,15 +357,12 @@ def restore_data_step(message):
 
 def process_restore(message):
     if not admin_only(message): return
-    
     raw_data = ""
     try:
-        # إذا أرسل ملف
         if message.document:
             file_info = bot.get_file(message.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
             raw_data = downloaded_file.decode('utf-8')
-        # إذا أرسل نص
         elif message.text:
             raw_data = message.text
         else:
@@ -389,19 +370,13 @@ def process_restore(message):
             return
 
         parsed_data = json.loads(raw_data)
-        
-        # الإصلاح: استخدام save_series_data لإنشاء المجلدات وحفظ الملف بشكل آمن
         save_series_data(parsed_data)
-            
         bot.reply_to(message, "✅ <b>تم استعادة البيانات بنجاح!</b>", parse_mode="HTML")
     except json.JSONDecodeError:
          bot.reply_to(message, "❌ الكود المرسل ليس بصيغة JSON صحيحة. تأكد من نسخه بالكامل.")
     except Exception as e:
         bot.reply_to(message, f"❌ حدث خطأ أثناء الاستعادة: {e}")
 
-# ==========================================
-# نظام الإضافة الذكي (مسلسلات / مصارعة)
-# ==========================================
 @bot.message_handler(commands=["add"])
 def add_item_start(message):
     if not admin_only(message): return
@@ -411,10 +386,8 @@ def add_item_start(message):
 def process_link_step(message):
     if message.text.startswith('/'): return
     link = message.text.strip()
-    
     try:
         if "/wrestling/" in link.lower():
-            # رابط مصارعة
             parts = link.split('/')
             slug = parts[5]
             filename = parts[-1]
@@ -426,7 +399,6 @@ def process_link_step(message):
             else:
                 bot.reply_to(message, "❌ لم يتم العثور على تاريخ العرض في الرابط (YYYY-MM-DD).")
         else:
-            # رابط مسلسل
             parts = link.split('/')
             region = parts[4]
             slug = parts[5]
@@ -442,7 +414,6 @@ def process_link_step(message):
     except Exception as e:
         bot.reply_to(message, f"❌ خطأ في قراءة الرابط: {e}")
 
-# مسار المصارعة
 def w_title_step(message, slug, date_str):
     if message.text.startswith('/'): return
     title = message.text.strip()
@@ -460,13 +431,11 @@ def w_save_step(message, slug, date_str, title, series_id):
     if message.text.startswith('/'): return
     try: last_ep = int(message.text.strip())
     except ValueError: return bot.reply_to(message, "❌ يجب أن يكون الرقم صحيحاً.")
-    
     data = load_series_data()
     data[slug] = {"type": "wrestling", "title": title, "last_date": date_str, "last_ep": last_ep, "series_id": series_id}
     save_series_data(data)
     bot.reply_to(message, f"✅ <b>تمت إضافة المصارعة!</b>\nسيبحث عن العرض التالي بعد 7 أيام من تاريخ {date_str}.", parse_mode="HTML")
 
-# مسار المسلسلات
 def s_title_step(message, slug, region, season, episode):
     if message.text.startswith('/'): return
     title = message.text.strip()
@@ -477,15 +446,11 @@ def s_save_step(message, slug, region, season, episode, title):
     if message.text.startswith('/'): return
     try: series_id = int(message.text.strip())
     except ValueError: return bot.reply_to(message, "❌ يجب أن يكون الرقم صحيحاً.")
-    
     data = load_series_data()
     data[slug] = {"type": "series", "title": title, "season": season, "last_ep": episode, "region": region, "series_id": series_id}
     save_series_data(data)
     bot.reply_to(message, f"✅ <b>تمت إضافة المسلسل!</b>\nسيبحث عن الحلقة {episode + 1}", parse_mode="HTML")
 
-# ==========================================
-# أوامر التعديل والقوائم
-# ==========================================
 @bot.message_handler(commands=["setep"])
 def set_episode(message):
     if not admin_only(message): return
@@ -546,6 +511,49 @@ def force_check(message):
     scan_lock.release()
     bot.reply_to(message, "🔎 <b>بدأ الفحص اليدوي...</b>", parse_mode="HTML")
     threading.Thread(target=lambda: bot.send_message(ADMIN_CHAT_ID, "✅ <b>انتهى الفحص!</b>\n\n" + ("\n".join(scan_all_series_once()) or "📭 فارغ."), parse_mode="HTML"), daemon=True).start()
+
+# ==========================================
+# أمر فحص وكشف حماية السيرفر (مهم جداً للDebugging)
+# ==========================================
+@bot.message_handler(commands=["test"])
+def test_link_cmd(message):
+    if not admin_only(message): return
+    try:
+        url = message.text.split()[1]
+        msg_wait = bot.reply_to(message, f"🔄 جاري فحص الرابط وكشف حماية السيرفر...\nانتظر...")
+        
+        response = requests.get(
+            url,
+            headers={"User-Agent": APP_USER_AGENT, "Accept": "*/*"},
+            timeout=10,
+            stream=True,
+            verify=False
+        )
+        
+        status = response.status_code
+        c_type = response.headers.get("Content-Type", "غير معروف")
+        c_len = response.headers.get("Content-Length", "غير معروف")
+        
+        msg = f"📊 **نتيجة كشف السيرفر:**\n\n"
+        msg += f"الـ Status Code: `{status}`\n"
+        msg += f"الـ Content-Type: `{c_type}`\n"
+        msg += f"الـ Content-Length: `{c_len}`\n\n"
+        
+        if status == 200:
+            msg += "✅ السيرفر بيرد بـ 200 OK!\n(المشكلة كانت في نوع الملف، ابعتلي النتيجة عشان أظبطها)."
+        elif status == 403:
+            msg += "🚫 السيرفر بيرد بـ 403 Forbidden!\n(السيرفر قافش البوت ومانعه، غالباً حظر IP)."
+        elif status == 404:
+            msg += "❌ السيرفر بيرد بـ 404!\n(السيرفر بيقول الملف مش موجود، الرابط غلط)."
+        else:
+            msg += "⚠️ رد غريب من السيرفر."
+            
+        bot.edit_message_text(msg, message.chat.id, msg_wait.message_id, parse_mode="Markdown")
+        
+    except IndexError:
+        bot.reply_to(message, "❌ اكتب الأمر كالتالي:\n`/test الرابط`", parse_mode="Markdown")
+    except Exception as e:
+        bot.reply_to(message, f"❌ حدث خطأ أثناء الفحص:\n`{e}`", parse_mode="Markdown")
 
 if __name__ == "__main__":
     threading.Thread(target=auto_checker_loop, daemon=True).start()
