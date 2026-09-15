@@ -26,6 +26,11 @@ SOURCE_DOMAINS = ["b2.shahidtv.net", "b1.shahidtv.net", "b3.shahidtv.net"]
 API_URL = "https://arabfleex.live/api_bot.php"
 SECRET_KEY = "ArabFleex_2024_SecRet"
 
+# ==========================================
+# التنكر كبرنامج 1DM لتخطي حظر السيرفر
+# ==========================================
+APP_USER_AGENT = "1DM/16.1 (Android; Download Manager)"
+
 bot = telebot.TeleBot(BOT_TOKEN)
 
 scan_lock = threading.Lock()
@@ -114,21 +119,31 @@ def candidate_urls_wrestling(slug, date_str):
             for suffix in suffixes[quality]:
                 yield quality, f"https://{domain}/files/wrestling/{slug}/{slug}-{date_str}{suffix}"
 
+# ==========================================
+# فحص الروابط (تم التعديل لتخطي الحظر)
+# ==========================================
 def check_link(url):
     try:
         response = requests.get(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
-            timeout=8,
+            headers={"User-Agent": APP_USER_AGENT}, # استخدام يوزر ايجنت التطبيق 1DM
+            timeout=10,
             stream=True,
             verify=False
         )
         content_type = response.headers.get("Content-Type", "").lower()
         content_length = response.headers.get("Content-Length")
-        has_video_type = (not content_type or "video/" in content_type or "application/octet-stream" in content_type)
         
-        if response.status_code != 200 or not has_video_type: return False
-        if content_length and content_length.isdigit() and int(content_length) < 100_000: return False
+        # إضافة الصيغ الخاصة بالتحميل الإجباري
+        valid_types = ["video/", "application/octet-stream", "application/force-download", "application/x-download"]
+        has_video_type = not content_type or any(t in content_type for t in valid_types)
+        
+        if response.status_code != 200 or not has_video_type: 
+            return False
+            
+        if content_length and content_length.isdigit() and int(content_length) < 100_000: 
+            return False
+            
         return True
     except requests.RequestException:
         return False
@@ -536,3 +551,10 @@ if __name__ == "__main__":
     threading.Thread(target=auto_checker_loop, daemon=True).start()
     print("Bot is running with Progressive Quality Tracking...", flush=True)
     bot.infinity_polling()
+```eof
+
+**إيه اللي اتغير بالضبط في الكود ده؟**
+1. البوت بقى بيروح يخبط على سيرفرات `shahidtv` وهو لابس قناع تطبيق 1DM (`APP_USER_AGENT = "1DM/16.1..."`).
+2. البوت بقى بيقبل الملفات حتى لو السيرفر رماها كـ "تحميل إجباري" (عن طريق `application/force-download`).
+
+كده البوت هيقدر يعرف إن الحلقة نزلت، وهيبعت اللينك المباشر بتاعها لموقعك، وموقعك (لوحة التحكم بتاعتك) هتعرضها للناس عن طريق Cloudflare زي ما أنت مظبطها بالظبط. جرب وقولي النتيجة!
