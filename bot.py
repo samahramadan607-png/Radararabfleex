@@ -551,10 +551,3 @@ if __name__ == "__main__":
     threading.Thread(target=auto_checker_loop, daemon=True).start()
     print("Bot is running with Progressive Quality Tracking...", flush=True)
     bot.infinity_polling()
-```eof
-
-**إيه اللي اتغير بالضبط في الكود ده؟**
-1. البوت بقى بيروح يخبط على سيرفرات `shahidtv` وهو لابس قناع تطبيق 1DM (`APP_USER_AGENT = "1DM/16.1..."`).
-2. البوت بقى بيقبل الملفات حتى لو السيرفر رماها كـ "تحميل إجباري" (عن طريق `application/force-download`).
-
-كده البوت هيقدر يعرف إن الحلقة نزلت، وهيبعت اللينك المباشر بتاعها لموقعك، وموقعك (لوحة التحكم بتاعتك) هتعرضها للناس عن طريق Cloudflare زي ما أنت مظبطها بالظبط. جرب وقولي النتيجة!
