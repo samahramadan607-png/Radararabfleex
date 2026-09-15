@@ -9,6 +9,8 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
 
 import requests
+# استدعاء مكتبة التخفي الجديدة لتخطي حماية Cloudflare و TLS Fingerprinting
+from curl_cffi import requests as curl_requests 
 import urllib3
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -26,11 +28,6 @@ SOURCE_DOMAINS = ["b2.shahidtv.net", "b1.shahidtv.net", "b3.shahidtv.net"]
 API_URL = "https://arabfleex.live/api_bot.php"
 SECRET_KEY = "ArabFleex_2024_SecRet"
 
-# ==========================================
-# التنكر كبرنامج 1DM لتخطي حظر السيرفر
-# ==========================================
-APP_USER_AGENT = "1DM/16.1 (Android; Download Manager)"
-
 bot = telebot.TeleBot(BOT_TOKEN)
 
 scan_lock = threading.Lock()
@@ -42,7 +39,7 @@ last_scan_result = "لم يبدأ فحص بعد"
 MAX_WAIT_HOURS = 6 # أقصى مدة للانتظار لاستكمال الجودات
 
 # ==========================================
-# دالة تخطي حماية InfinityFree
+# دالة تخطي حماية InfinityFree (لموقعك)
 # ==========================================
 def get_infinity_session(url):
     session = requests.Session()
@@ -120,13 +117,18 @@ def candidate_urls_wrestling(slug, date_str):
                 yield quality, f"https://{domain}/files/wrestling/{slug}/{slug}-{date_str}{suffix}"
 
 # ==========================================
-# فحص الروابط (معدل لتخطي الحظر)
+# فحص الروابط (باستخدام curl_cffi لتخطي الحماية)
 # ==========================================
 def check_link(url):
     try:
-        response = requests.get(
+        # استخدام curl_requests بدلاً من requests العادية
+        response = curl_requests.get(
             url,
-            headers={"User-Agent": APP_USER_AGENT},
+            impersonate="chrome", # هنا السحر! هنتخفى كمتصفح كروم حقيقي ببصمة التشفير بتاعته
+            headers={
+                "Referer": "https://b2.shahidtv.net/",
+                "Accept": "*/*"
+            },
             timeout=10,
             stream=True,
             verify=False
@@ -144,7 +146,7 @@ def check_link(url):
             return False
             
         return True
-    except requests.RequestException:
+    except Exception as e:
         return False
 
 # ==========================================
@@ -513,18 +515,19 @@ def force_check(message):
     threading.Thread(target=lambda: bot.send_message(ADMIN_CHAT_ID, "✅ <b>انتهى الفحص!</b>\n\n" + ("\n".join(scan_all_series_once()) or "📭 فارغ."), parse_mode="HTML"), daemon=True).start()
 
 # ==========================================
-# أمر فحص وكشف حماية السيرفر (مهم جداً للDebugging)
+# أمر فحص وكشف حماية السيرفر (محدث بـ curl_cffi)
 # ==========================================
 @bot.message_handler(commands=["test"])
 def test_link_cmd(message):
     if not admin_only(message): return
     try:
         url = message.text.split()[1]
-        msg_wait = bot.reply_to(message, f"🔄 جاري فحص الرابط وكشف حماية السيرفر...\nانتظر...")
+        msg_wait = bot.reply_to(message, f"🔄 جاري فحص الرابط باستخدام متصفح حقيقي (curl_cffi)...\nانتظر...")
         
-        response = requests.get(
+        response = curl_requests.get(
             url,
-            headers={"User-Agent": APP_USER_AGENT, "Accept": "*/*"},
+            impersonate="chrome",
+            headers={"Referer": "https://b2.shahidtv.net/", "Accept": "*/*"},
             timeout=10,
             stream=True,
             verify=False
@@ -534,17 +537,17 @@ def test_link_cmd(message):
         c_type = response.headers.get("Content-Type", "غير معروف")
         c_len = response.headers.get("Content-Length", "غير معروف")
         
-        msg = f"📊 **نتيجة كشف السيرفر:**\n\n"
+        msg = f"📊 **نتيجة كشف السيرفر (بعد التخطي):**\n\n"
         msg += f"الـ Status Code: `{status}`\n"
         msg += f"الـ Content-Type: `{c_type}`\n"
         msg += f"الـ Content-Length: `{c_len}`\n\n"
         
         if status == 200:
-            msg += "✅ السيرفر بيرد بـ 200 OK!\n(المشكلة كانت في نوع الملف، ابعتلي النتيجة عشان أظبطها)."
+            msg += "✅ **نجاح!** قدرنا نضرب الحماية والسيرفر رد بـ 200 OK!"
         elif status == 403:
-            msg += "🚫 السيرفر بيرد بـ 403 Forbidden!\n(السيرفر قافش البوت ومانعه، غالباً حظر IP)."
+            msg += "🚫 لسه فيه 403 (كده المشكلة في الآي بي نفسه ومحتاجين بروكسي)."
         elif status == 404:
-            msg += "❌ السيرفر بيرد بـ 404!\n(السيرفر بيقول الملف مش موجود، الرابط غلط)."
+            msg += "❌ السيرفر بيقول 404 (الملف مش موجود هنا)."
         else:
             msg += "⚠️ رد غريب من السيرفر."
             
@@ -553,9 +556,9 @@ def test_link_cmd(message):
     except IndexError:
         bot.reply_to(message, "❌ اكتب الأمر كالتالي:\n`/test الرابط`", parse_mode="Markdown")
     except Exception as e:
-        bot.reply_to(message, f"❌ حدث خطأ أثناء الفحص:\n`{e}`", parse_mode="Markdown")
+        bot.reply_to(message, f"❌ حدث خطأ أثناء الفحص:\n`{e}`\n(تأكد إنك سطبت مكتبة curl_cffi)", parse_mode="Markdown")
 
 if __name__ == "__main__":
     threading.Thread(target=auto_checker_loop, daemon=True).start()
-    print("Bot is running with Progressive Quality Tracking...", flush=True)
+    print("Bot is running with curl_cffi Stealth Mode...", flush=True)
     bot.infinity_polling()
