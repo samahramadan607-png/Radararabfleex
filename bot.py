@@ -21,15 +21,19 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 BOT_TOKEN = "7808630939:AAEY0_q6vnkKlMRjvXNmEXwK1G80hv0vghY"
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "1013251619")
 DATA_FILE = os.environ.get("DATA_FILE", "series.json")
-# تم التعديل ليصبح الفحص كل دقيقة (60 ثانية)
-CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", "60"))
+# تم التعديل ليصبح الفحص كل 5 دقائق (300 ثانية) لتخفيف الضغط تماماً
+CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", "300"))
 SOURCE_DOMAINS = ["b2.shahidtv.net", "b1.shahidtv.net", "b3.shahidtv.net"]
 
 API_URL = "https://arabfleex.live/api_bot.php"
 SECRET_KEY = "ArabFleex_2024_SecRet"
 
-# رابط الـ Cloudflare Worker الخاص بك
-CF_WORKER_URL = "https://lingering-sun-46b4.mf828262.workers.dev/"
+# قائمة حسابات Cloudflare Workers لتوزيع ضغط الفحص
+CF_WORKERS = [
+    "https://lingering-sun-46b4.mf828262.workers.dev/?url=",
+    "https://jolly-term-f45d.afu6656gu.workers.dev/?url=",
+    "https://shy-snow-52c3.alifalah9988044.workers.dev/?url="
+]
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -119,12 +123,33 @@ def candidate_urls_wrestling(slug, date_str):
                 yield quality, f"https://{domain}/files/wrestling/{slug}/{slug}-{date_str}{suffix}"
 
 # ==========================================
-# فحص الروابط عبر Cloudflare Worker
+# توليد روابط "الكشاف الذكي" (480p فقط على سيرفر b2)
+# ==========================================
+def probe_urls_series(slug, season, episode, region):
+    domain = "b2.shahidtv.net"
+    regions = list(dict.fromkeys([region, "EG"]))
+    episode_codes = [f"EP{episode:03d}", f"EP{episode:02d}"]
+    suffixes = ["-480p.mp4", "-480p-v2.mp4"]
+    for r in regions:
+        for ep_code in episode_codes:
+            for suffix in suffixes:
+                yield f"https://{domain}/files/{r}/{slug}/{slug}-S{season:02d}-{ep_code}{suffix}"
+
+def probe_urls_wrestling(slug, date_str):
+    domain = "b2.shahidtv.net"
+    suffixes = ["-480p.mp4", "-480p-v2.mp4"]
+    for suffix in suffixes:
+        yield f"https://{domain}/files/wrestling/{slug}/{slug}-{date_str}{suffix}"
+
+# ==========================================
+# فحص الروابط عبر Cloudflare Workers
 # ==========================================
 def check_link(original_url):
+    import random
     try:
-        # تمرير الطلب من خلال الـ Worker الخاص بك
-        test_url = f"{CF_WORKER_URL}?url={quote(original_url, safe='')}"
+        # اختيار Worker عشوائي لتوزيع الضغط
+        worker = random.choice(CF_WORKERS)
+        test_url = f"{worker}{quote(original_url, safe='')}"
         
         response = curl_requests.get(
             test_url,
@@ -150,13 +175,14 @@ def check_link(original_url):
         return False
 
 # ==========================================
-# عملية الفحص الأساسية (سحب مباشر ودمج الـ Worker بدون انتظار)
+# عملية الفحص الأساسية (باستخدام الكشاف)
 # ==========================================
 def scan_item(slug, info):
     global last_scan_result
     item_type = info.get("type", "series")
     links = {}
     attempts = 0
+    probe_found = False
 
     if item_type == "wrestling":
         last_date_str = info.get("last_date", "2026-01-01")
@@ -166,22 +192,40 @@ def scan_item(slug, info):
         target_date_to_scan = next_date_obj.strftime("%Y-%m-%d")
         target_episode = last_ep + 1
         
-        for quality, url in candidate_urls_wrestling(slug, target_date_to_scan):
-            if quality in links: continue
+        # إرسال الكشاف أولاً
+        for url in probe_urls_wrestling(slug, target_date_to_scan):
             attempts += 1
             if check_link(url):
-                links[quality] = url
+                probe_found = True
+                break
+                
+        # لو الكشاف لقى الحلقة، نبدأ الفحص الشامل
+        if probe_found:
+            for quality, url in candidate_urls_wrestling(slug, target_date_to_scan):
+                if quality in links: continue
+                attempts += 1
+                if check_link(url):
+                    links[quality] = url
                 
         display_title = target_date_to_scan.replace("-", ".")
     else:
         target_episode = int(info.get("last_ep", 0)) + 1
         season = int(info.get("season", 1))
         
-        for quality, url in candidate_urls_series(slug, season, target_episode, str(info.get("region", "EG")).upper()):
-            if quality in links: continue
+        # إرسال الكشاف أولاً
+        for url in probe_urls_series(slug, season, target_episode, str(info.get("region", "EG")).upper()):
             attempts += 1
             if check_link(url):
-                links[quality] = url
+                probe_found = True
+                break
+                
+        # لو الكشاف لقى الحلقة، نبدأ الفحص الشامل
+        if probe_found:
+            for quality, url in candidate_urls_series(slug, season, target_episode, str(info.get("region", "EG")).upper()):
+                if quality in links: continue
+                attempts += 1
+                if check_link(url):
+                    links[quality] = url
                 
         display_title = f"الحلقة {target_episode}"
         target_date_to_scan = None
@@ -194,8 +238,8 @@ def scan_item(slug, info):
     series_id = info.get("series_id")
     found_keys = list(links.keys())
     
-    # دمج الـ Cloudflare Worker مع اللينك قبل إرساله للموقع لضمان التحميل
-    formatted_links = [f"{q.replace('p', '')}|{CF_WORKER_URL}?url={quote(links[q], safe='')}" for q in ["360p", "480p", "720p", "1080p"] if q in links]
+    # نرسل الروابط المباشرة للموقع (لأن play.php أصبح يضيف الـ Worker تلقائياً)
+    formatted_links = [f"{q.replace('p', '')}|{links[q]}" for q in ["360p", "480p", "720p", "1080p"] if q in links]
     links_string = ",".join(formatted_links)
     
     api_status = "لم يتم تحديد ID"
@@ -470,9 +514,11 @@ def force_check(message):
 def test_link_cmd(message):
     if not admin_only(message): return
     try:
+        import random
         url = message.text.split()[1]
-        msg_wait = bot.reply_to(message, "🔄 جاري فحص الرابط عبر Cloudflare Worker...")
-        test_url = f"{CF_WORKER_URL}?url={quote(url, safe='')}"
+        worker = random.choice(CF_WORKERS)
+        msg_wait = bot.reply_to(message, f"🔄 جاري فحص الرابط عبر Worker عشوائي...\n`{worker}`", parse_mode="Markdown")
+        test_url = f"{worker}{quote(url, safe='')}"
         
         response = curl_requests.get(
             test_url,
