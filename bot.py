@@ -1,4 +1,3 @@
-# STREAMING_CHUNK:Updating the script with Cloudflare Worker proxy...
 import html
 import json
 import os
@@ -22,7 +21,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 BOT_TOKEN = "7808630939:AAEY0_q6vnkKlMRjvXNmEXwK1G80hv0vghY"
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "1013251619")
 DATA_FILE = os.environ.get("DATA_FILE", "series.json")
-CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", "180"))
+# تم التعديل ليصبح الفحص كل دقيقة (60 ثانية)
+CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", "60"))
 SOURCE_DOMAINS = ["b2.shahidtv.net", "b1.shahidtv.net", "b3.shahidtv.net"]
 
 API_URL = "https://arabfleex.live/api_bot.php"
@@ -39,7 +39,6 @@ last_scan_at = None
 scan_cycles = 0
 total_added = 0
 last_scan_result = "لم يبدأ فحص بعد"
-MAX_WAIT_HOURS = 6
 
 # ==========================================
 # دالة تخطي حماية InfinityFree
@@ -124,8 +123,7 @@ def candidate_urls_wrestling(slug, date_str):
 # ==========================================
 def check_link(original_url):
     try:
-        # توجيه الطلب من خلال الـ Worker الخاص بك
-        # (حسب تصميم الـ Worker، قد يكون بالطريقة التالية أو بوضع الرابط بعده)
+        # تمرير الطلب من خلال الـ Worker الخاص بك
         test_url = f"{CF_WORKER_URL}?url={quote(original_url, safe='')}"
         
         response = curl_requests.get(
@@ -152,25 +150,21 @@ def check_link(original_url):
         return False
 
 # ==========================================
-# عملية الفحص الأساسية (للمسلسلات والمصارعة)
+# عملية الفحص الأساسية (سحب مباشر ودمج الـ Worker بدون انتظار)
 # ==========================================
 def scan_item(slug, info):
     global last_scan_result
     item_type = info.get("type", "series")
     links = {}
     attempts = 0
-    state_changed = False
 
     if item_type == "wrestling":
         last_date_str = info.get("last_date", "2026-01-01")
         last_ep = int(info.get("last_ep", 0))
         date_obj = datetime.strptime(last_date_str, "%Y-%m-%d")
         next_date_obj = date_obj + timedelta(days=7)
-        next_date_str = next_date_obj.strftime("%Y-%m-%d")
+        target_date_to_scan = next_date_obj.strftime("%Y-%m-%d")
         target_episode = last_ep + 1
-        
-        current_track_id = info.get("track_id")
-        target_date_to_scan = next_date_str if current_track_id is None else current_track_id.split('_')[1]
         
         for quality, url in candidate_urls_wrestling(slug, target_date_to_scan):
             if quality in links: continue
@@ -179,7 +173,6 @@ def scan_item(slug, info):
                 links[quality] = url
                 
         display_title = target_date_to_scan.replace("-", ".")
-        target_id = f"{target_episode}_{target_date_to_scan}"
     else:
         target_episode = int(info.get("last_ep", 0)) + 1
         season = int(info.get("season", 1))
@@ -191,8 +184,7 @@ def scan_item(slug, info):
                 links[quality] = url
                 
         display_title = f"الحلقة {target_episode}"
-        target_id = str(target_episode)
-        next_date_str = None
+        target_date_to_scan = None
 
     if not links:
         last_scan_result = f"{info.get('title', slug)}: الفحص لم يجد جديد (تم فحص {attempts} رابط)"
@@ -201,84 +193,45 @@ def scan_item(slug, info):
     title = info.get("title", slug)
     series_id = info.get("series_id")
     found_keys = list(links.keys())
-    formatted_links = [f"{q.replace('p', '')}|{links[q]}" for q in ["360p", "480p", "720p", "1080p"] if q in links]
+    
+    # دمج الـ Cloudflare Worker مع اللينك قبل إرساله للموقع لضمان التحميل
+    formatted_links = [f"{q.replace('p', '')}|{CF_WORKER_URL}?url={quote(links[q], safe='')}" for q in ["360p", "480p", "720p", "1080p"] if q in links]
     links_string = ",".join(formatted_links)
     
-    current_track_id = info.get("track_id")
+    api_status = "لم يتم تحديد ID"
+    if series_id:
+        payload = {
+            "secret_key": SECRET_KEY, "action": "insert", "series_id": series_id,
+            "title": display_title, "episode_number": target_episode, "links_string": links_string
+        }
+        try:
+            session = get_infinity_session(API_URL)
+            res = session.post(API_URL, data=payload, timeout=20, verify=False)
+            if "INSERTED" in res.text: api_status = "تمت الإضافة للموقع بنجاح ✅"
+            elif "already exists" in res.text: api_status = "موجودة مسبقاً ⚠️"
+            else: api_status = f"خطأ: {res.text}"
+        except Exception as e: api_status = f"فشل الاتصال: {e}"
 
-    if current_track_id != target_id:
-        api_status = "لم يتم تحديد ID"
-        if series_id:
-            payload = {
-                "secret_key": SECRET_KEY, "action": "insert", "series_id": series_id,
-                "title": display_title, "episode_number": target_episode, "links_string": links_string
-            }
-            try:
-                session = get_infinity_session(API_URL)
-                res = session.post(API_URL, data=payload, timeout=20, verify=False)
-                if "INSERTED" in res.text: api_status = "تمت الإضافة للموقع بنجاح ✅"
-                elif "already exists" in res.text: api_status = "موجودة مسبقاً ⚠️"
-                else: api_status = f"خطأ: {res.text}"
-            except Exception as e: api_status = f"فشل الاتصال: {e}"
-
-        msg = (
-            f"🎬 <b>اكتشاف مبدئي:</b> {title}\n"
-            f"📺 <b>{display_title}</b>\n"
-            f"📶 <b>الجودات المتاحة:</b> {len(links)}/4 ({', '.join(found_keys)})\n"
-            f"🌐 <b>الموقع:</b> {api_status}\n\n"
-            f"⏳ <i>سيتم مراقبة الجودات المتبقية لمدة {MAX_WAIT_HOURS} ساعات...</i>"
-        )
-        bot.send_message(ADMIN_CHAT_ID, msg, parse_mode="HTML")
+    msg = (
+        f"🎬 <b>تم اصطياد وإضافة جديد:</b> {title}\n"
+        f"📺 <b>{display_title}</b>\n"
+        f"📶 <b>الجودات اللي نزلت:</b> {len(links)}/4 ({', '.join(found_keys)})\n"
+        f"🌐 <b>الموقع:</b> {api_status}\n\n"
+        f"✅ <i>تم قفل الحلقة والانتقال للبحث عن الحلقة القادمة...</i>"
+    )
+    bot.send_message(ADMIN_CHAT_ID, msg, parse_mode="HTML")
+    
+    # التحديث الفوري عشان يتخطى الحلقة ويدخل على اللي بعدها فوراً
+    info["last_ep"] = target_episode
+    if item_type == "wrestling": 
+        info["last_date"] = target_date_to_scan
         
-        if len(links) >= 4:
-            info["last_ep"] = target_episode
-            if item_type == "wrestling": info["last_date"] = target_date_to_scan
-            info.pop("track_id", None); info.pop("track_start", None); info.pop("track_qualities", None)
-        else:
-            info["track_id"] = target_id
-            info["track_start"] = time.time()
-            info["track_qualities"] = found_keys
-        state_changed = True
+    # تنظيف أي بيانات تتبع قديمة كانت محفوظة
+    info.pop("track_id", None)
+    info.pop("track_start", None)
+    info.pop("track_qualities", None)
 
-    else:
-        tracked_qualities = info.get("track_qualities", [])
-        new_qualities = [q for q in found_keys if q not in tracked_qualities]
-        
-        if new_qualities:
-            api_status = "لم يتم التحديث"
-            if series_id:
-                payload = {
-                    "secret_key": SECRET_KEY, "action": "update", "series_id": series_id,
-                    "title": display_title, "episode_number": target_episode, "links_string": links_string
-                }
-                try:
-                    session = get_infinity_session(API_URL)
-                    res = session.post(API_URL, data=payload, timeout=20, verify=False)
-                    if "UPDATED" in res.text: api_status = "تم تحديث الجودات في الموقع ✅"
-                    else: api_status = f"خطأ: {res.text}"
-                except Exception as e: api_status = f"فشل الاتصال: {e}"
-                
-            msg = (
-                f"🔄 <b>تحديث جودات:</b> {title}\n"
-                f"📺 <b>{display_title}</b>\n"
-                f"🆕 <b>تم إضافة:</b> {', '.join(new_qualities)}\n"
-                f"🌐 <b>الموقع:</b> {api_status}"
-            )
-            bot.send_message(ADMIN_CHAT_ID, msg, parse_mode="HTML")
-            info["track_qualities"] = found_keys
-            state_changed = True
-            
-        time_elapsed = time.time() - info.get("track_start", 0)
-        if len(links) >= 4 or time_elapsed > (MAX_WAIT_HOURS * 3600):
-            reason = "اكتمال الـ 4 جودات 🌟" if len(links) >= 4 else f"انتهاء مهلة الـ {MAX_WAIT_HOURS} ساعات ⏱"
-            bot.send_message(ADMIN_CHAT_ID, f"🔒 <b>تم إغلاق تتبع:</b> {title} ({display_title})\nالسبب: {reason}", parse_mode="HTML")
-            
-            info["last_ep"] = target_episode
-            if item_type == "wrestling": info["last_date"] = target_id.split('_')[1]
-            info.pop("track_id", None); info.pop("track_start", None); info.pop("track_qualities", None)
-            state_changed = True
-
-    return state_changed
+    return True
 
 def scan_all_series_once():
     global last_scan_at, scan_cycles, total_added
@@ -328,7 +281,7 @@ def status_message():
         for slug, info in data.items():
             title = html.escape(str(info.get("title", slug)))
             series_id = info.get("series_id", "❌")
-            state = "⏳ يراقب الجودات..." if "track_id" in info else "✅ مكتمل"
+            state = "✅ مستعد"
             
             if info.get("type") == "wrestling":
                 lines.append(f"  🥊 <b>{title}</b> (ID: {series_id}): آخر عرض {info.get('last_date')} (ح{info.get('last_ep')}) | {state}")
@@ -342,7 +295,7 @@ def admin_only(message):
 @bot.message_handler(commands=["start", "help"])
 def welcome(message):
     if admin_only(message):
-        bot.reply_to(message, "🤖 <b>نظام المراقبة (مربوط بـ Cloudflare Worker)</b>\n\n🔹 <code>/add</code> — إضافة جديد\n🔹 <code>/del</code> — حذف\n🔹 <code>/list</code> — قائمة\n🔹 <code>/setep</code> — تعديل حلقة\n🔹 <code>/setdate</code> — تعديل تاريخ\n🔹 <code>/check</code> — الحالة\n🔹 <code>/scan</code> — فحص يدوي\n🔹 <code>/test</code> — فحص رابط", parse_mode="HTML")
+        bot.reply_to(message, "🤖 <b>نظام المراقبة (سريع + دعم Worker)</b>\n\n🔹 <code>/add</code> — إضافة جديد\n🔹 <code>/del</code> — حذف\n🔹 <code>/list</code> — قائمة\n🔹 <code>/setep</code> — تعديل حلقة\n🔹 <code>/setdate</code> — تعديل تاريخ\n🔹 <code>/check</code> — الحالة\n🔹 <code>/scan</code> — فحص يدوي\n🔹 <code>/test</code> — فحص رابط", parse_mode="HTML")
 
 @bot.message_handler(commands=["backup"])
 def backup_data(message):
@@ -510,7 +463,7 @@ def force_check(message):
     if not admin_only(message): return
     if not scan_lock.acquire(blocking=False): return bot.reply_to(message, "⏳ يوجد فحص جارٍ...")
     scan_lock.release()
-    bot.reply_to(message, "🔎 <b>بدأ الفحص عبر الـ Worker...</b>", parse_mode="HTML")
+    bot.reply_to(message, "🔎 <b>بدأ الفحص السريع عبر الـ Worker...</b>", parse_mode="HTML")
     threading.Thread(target=lambda: bot.send_message(ADMIN_CHAT_ID, "✅ <b>انتهى الفحص!</b>\n\n" + ("\n".join(scan_all_series_once()) or "📭 فارغ."), parse_mode="HTML"), daemon=True).start()
 
 @bot.message_handler(commands=["test"])
@@ -542,5 +495,5 @@ def test_link_cmd(message):
 
 if __name__ == "__main__":
     threading.Thread(target=auto_checker_loop, daemon=True).start()
-    print("Bot is running with Cloudflare Worker Integration...", flush=True)
+    print("Bot is running with Fast Mode + CF Worker Download Proxy...", flush=True)
     bot.infinity_polling()
