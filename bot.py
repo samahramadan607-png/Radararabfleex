@@ -28,11 +28,11 @@ SOURCE_DOMAINS = ["b2.shahidtv.net", "b1.shahidtv.net", "b3.shahidtv.net"]
 API_URL = "https://arabfleex.live/api_bot.php"
 SECRET_KEY = "ArabFleex_2024_SecRet"
 
-# قائمة حسابات Cloudflare Workers لتوزيع ضغط الفحص
+# قائمة حسابات Cloudflare Workers الـ 3 الجديدة لتوزيع ضغط الفحص
 CF_WORKERS = [
-    "https://lingering-sun-46b4.mf828262.workers.dev/?url=",
     "https://jolly-term-f45d.afu6656gu.workers.dev/?url=",
-    "https://shy-snow-52c3.alifalah9988044.workers.dev/?url="
+    "https://shy-snow-52c3.alifalah9988044.workers.dev/?url=",
+    "https://young-glade-3a0e.sspw9f88.workers.dev/?url="
 ]
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -175,10 +175,51 @@ def check_link(original_url):
         return False
 
 # ==========================================
+# دالة حساب وقت الفحص (النوم الذكي)
+# ==========================================
+def is_time_to_scan(info):
+    release_time_str = info.get("release_time")
+    # لو مفيش وقت متسجل (ملف الباك أب القديم)، افحص عادي
+    if not release_time_str: return True 
+    
+    try:
+        release_time_str = release_time_str.strip().upper()
+        if ":" in release_time_str:
+            dt = datetime.strptime(release_time_str, "%I:%M %p")
+        else:
+            dt = datetime.strptime(release_time_str, "%I %p")
+    except ValueError:
+        return True # لو صيغة الوقت مكتوبة غلط، افحص احتياطي
+
+    # تحديد توقيت مصر (UTC+3)
+    egypt_tz = timezone(timedelta(hours=3))
+    now = datetime.now(egypt_tz)
+    
+    now_mins = now.hour * 60 + now.minute
+    target_mins = dt.hour * 60 + dt.minute
+    
+    # حساب الفرق للتعامل السلس لو الوقت كان بعد منتصف الليل
+    diff = now_mins - target_mins
+    if diff < -720: diff += 1440
+    elif diff > 720: diff -= 1440
+    
+    # البوت هيصحى قبل الميعاد بـ 60 دقيقة، ويفضل صاحي للمسلسل ده لمدة 10 ساعات كحد أقصى لو اتأخر
+    if -60 <= diff <= 600:
+        return True
+        
+    return False
+
+# ==========================================
 # عملية الفحص الأساسية (باستخدام الكشاف)
 # ==========================================
 def scan_item(slug, info):
     global last_scan_result
+    
+    # التيك تشيك بتاع موعد النزول أول حاجة
+    if not is_time_to_scan(info):
+        last_scan_result = f"{info.get('title', slug)}: خارج موعد النزول (في وضع النوم 💤)"
+        return False
+        
     item_type = info.get("type", "series")
     links = {}
     attempts = 0
@@ -325,12 +366,13 @@ def status_message():
         for slug, info in data.items():
             title = html.escape(str(info.get("title", slug)))
             series_id = info.get("series_id", "❌")
+            rel_time = info.get("release_time", "طوال اليوم")
             state = "✅ مستعد"
             
             if info.get("type") == "wrestling":
-                lines.append(f"  🥊 <b>{title}</b> (ID: {series_id}): آخر عرض {info.get('last_date')} (ح{info.get('last_ep')}) | {state}")
+                lines.append(f"  🥊 <b>{title}</b> (ID: {series_id}): آخر عرض {info.get('last_date')} | ⏱ {rel_time} | {state}")
             else:
-                lines.append(f"  🎬 <b>{title}</b> (ID: {series_id}): حلقة {info.get('last_ep', 0)} | {state}")
+                lines.append(f"  🎬 <b>{title}</b> (ID: {series_id}): حلقة {info.get('last_ep', 0)} | ⏱ {rel_time} | {state}")
     return "\n".join(lines)
 
 def admin_only(message):
@@ -339,7 +381,7 @@ def admin_only(message):
 @bot.message_handler(commands=["start", "help"])
 def welcome(message):
     if admin_only(message):
-        bot.reply_to(message, "🤖 <b>نظام المراقبة (سريع + دعم Worker)</b>\n\n🔹 <code>/add</code> — إضافة جديد\n🔹 <code>/del</code> — حذف\n🔹 <code>/list</code> — قائمة\n🔹 <code>/setep</code> — تعديل حلقة\n🔹 <code>/setdate</code> — تعديل تاريخ\n🔹 <code>/check</code> — الحالة\n🔹 <code>/scan</code> — فحص يدوي\n🔹 <code>/test</code> — فحص رابط", parse_mode="HTML")
+        bot.reply_to(message, "🤖 <b>نظام المراقبة (سريع + دعم Worker)</b>\n\n🔹 <code>/add</code> — إضافة جديد\n🔹 <code>/del</code> — حذف\n🔹 <code>/list</code> — قائمة\n🔹 <code>/setep</code> — تعديل حلقة\n🔹 <code>/setdate</code> — تعديل تاريخ\n🔹 <code>/settime</code> — تحديد موعد النزول ⏱\n🔹 <code>/check</code> — الحالة\n🔹 <code>/scan</code> — فحص يدوي\n🔹 <code>/test</code> — فحص رابط", parse_mode="HTML")
 
 @bot.message_handler(commands=["backup"])
 def backup_data(message):
@@ -472,6 +514,31 @@ def set_date(message):
             save_series_data(data)
             bot.reply_to(message, f"✅ تم التعديل إلى تاريخ: {new_date}", parse_mode="HTML")
     except: bot.reply_to(message, "❌ الصيغة: /setdate slug YYYY-MM-DD")
+
+@bot.message_handler(commands=["settime"])
+def set_release_time(message):
+    if not admin_only(message): return
+    try:
+        parts = message.text.split(" ", 2)
+        slug = parts[1]
+        time_str = parts[2]
+        
+        # تجربة قراءة الوقت للتأكد من صحة الصيغة
+        time_str_upper = time_str.strip().upper()
+        if ":" in time_str_upper: datetime.strptime(time_str_upper, "%I:%M %p")
+        else: datetime.strptime(time_str_upper, "%I %p")
+        
+        data = load_series_data()
+        if slug in data:
+            data[slug]["release_time"] = time_str_upper
+            save_series_data(data)
+            bot.reply_to(message, f"✅ تم تحديد موعد نزول [{slug}] الساعة: {time_str_upper}\n💤 البوت هينام ويصحى يراقبه قبل الميعاد بساعة.", parse_mode="HTML")
+        else:
+            bot.reply_to(message, "❌ المسلسل غير موجود.")
+    except ValueError:
+        bot.reply_to(message, "❌ صيغة الوقت خطأ. استخدم صيغة 12 ساعة (مثال: 8:00 PM أو 10 AM)")
+    except Exception as e:
+        bot.reply_to(message, "❌ الصيغة: /settime slug 8:00 PM")
 
 @bot.message_handler(commands=["list"])
 def list_items(message):
