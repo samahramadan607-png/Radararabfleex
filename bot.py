@@ -129,7 +129,7 @@ def probe_urls_series(slug, season, episode, region):
     domain = "b2.shahidtv.net"
     regions = list(dict.fromkeys([region, "EG"]))
     episode_codes = [f"EP{episode:03d}", f"EP{episode:02d}"]
-    suffixes = ["-480p.mp4", "-480p-v2.mp4"]
+    suffixes = ["-720p.mp4", "-720p-v2.mp4"]
     for r in regions:
         for ep_code in episode_codes:
             for suffix in suffixes:
@@ -137,7 +137,7 @@ def probe_urls_series(slug, season, episode, region):
 
 def probe_urls_wrestling(slug, date_str):
     domain = "b2.shahidtv.net"
-    suffixes = ["-480p.mp4", "-480p-v2.mp4"]
+    suffixes = ["-720p.mp4", "-720p-v2.mp4"]
     for suffix in suffixes:
         yield f"https://{domain}/files/wrestling/{slug}/{slug}-{date_str}{suffix}"
 
@@ -178,6 +178,26 @@ def check_link(original_url):
 # دالة حساب وقت الفحص (النوم الذكي)
 # ==========================================
 def is_time_to_scan(info):
+    egypt_tz = timezone(timedelta(hours=3))
+    now = datetime.now(egypt_tz)
+
+    # 1. فحص التاريخ أولاً (لعروض المصارعة فقط)
+    if info.get("type") == "wrestling":
+        last_date_str = info.get("last_date")
+        if last_date_str:
+            try:
+                # نحسب تاريخ العرض القادم (بعد 7 أيام)
+                last_date = datetime.strptime(last_date_str, "%Y-%m-%d").date()
+                next_date = last_date + timedelta(days=7)
+                today = now.date()
+                
+                # لو تاريخ النهارده لسه مجاش تاريخ العرض، كمل نوم ومتبصش في الساعة أصلاً!
+                if today < next_date:
+                    return False 
+            except ValueError:
+                pass # لو التاريخ مكتوب غلط، كمل عادي
+
+    # 2. فحص الساعة (المنطق القديم للمسلسلات ولليوم الموعود للمصارعة)
     release_time_str = info.get("release_time")
     # لو مفيش وقت متسجل (ملف الباك أب القديم)، افحص عادي
     if not release_time_str: return True 
@@ -190,10 +210,6 @@ def is_time_to_scan(info):
             dt = datetime.strptime(release_time_str, "%I %p")
     except ValueError:
         return True # لو صيغة الوقت مكتوبة غلط، افحص احتياطي
-
-    # تحديد توقيت مصر (UTC+3)
-    egypt_tz = timezone(timedelta(hours=3))
-    now = datetime.now(egypt_tz)
     
     now_mins = now.hour * 60 + now.minute
     target_mins = dt.hour * 60 + dt.minute
@@ -275,6 +291,21 @@ def scan_item(slug, info):
         last_scan_result = f"{info.get('title', slug)}: الفحص لم يجد جديد (تم فحص {attempts} رابط)"
         return False
 
+    has_1080p = "1080p" in links
+    if not has_1080p:
+        if "grace_start" not in info:
+            info["grace_start"] = datetime.now(timezone.utc).timestamp()
+            last_scan_result = f"{info.get('title', slug)}: لقطنا 720p.. ننتظر 10 دقائق لجودة 1080p ⏱️"
+            return False
+        else:
+            elapsed_seconds = datetime.now(timezone.utc).timestamp() - info.get("grace_start")
+            if elapsed_seconds < 600: # 600 ثانية = 10 دقائق
+                last_scan_result = f"{info.get('title', slug)}: في فترة السماح (ننتظر 1080p - مضى {int(elapsed_seconds/60)} دقيقة) ⏳"
+                return False
+
+    # لو لقى 1080p أو الـ 10 دقايق خلصوا، هيمسح العداد وينشر اللي موجود
+    info.pop("grace_start", None)
+
     title = info.get("title", slug)
     series_id = info.get("series_id")
     found_keys = list(links.keys())
@@ -315,6 +346,7 @@ def scan_item(slug, info):
     info.pop("track_id", None)
     info.pop("track_start", None)
     info.pop("track_qualities", None)
+    info.pop("grace_start", None) # تأكيد مسح فترة السماح للحلقة الجديدة
 
     return True
 
