@@ -641,4 +641,8 @@ def test_link_cmd(message):
 if __name__ == "__main__":
     threading.Thread(target=auto_checker_loop, daemon=True).start()
     print("Bot is running with Fast Mode + CF Worker Download Proxy...", flush=True)
+    
+    # السطر التالي سيقوم بمسح أي Webhook عالق في تيليجرام تلقائياً قبل تشغيل البوت
+    bot.remove_webhook() 
+    
     bot.infinity_polling()
